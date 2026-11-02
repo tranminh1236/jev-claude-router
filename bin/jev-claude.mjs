@@ -5,40 +5,13 @@ import { homedir, tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { startProxy } from "../src/proxy.mjs";
-import { AUTO_MODEL, SMALLEST_CONTEXT_TOKENS } from "../src/config.mjs";
 import { readSavedModel, restoreSavedModel } from "../src/settings.mjs";
+import { autoModelEnv } from "../src/claude-settings.mjs";
 import { LOG_FILE } from "../src/log.mjs";
 import { which, missingMessage, shellSafe } from "../src/which.mjs";
 import { loadEnv, jevKey, ENV_FILE_HINT } from "../src/env.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-
-/**
- * Registers "Jev Router" as an extra row in Claude Code's /model picker and starts the session
- * on it. Claude Code sends the id verbatim because it does not validate model names behind a
- * custom base URL, which is what lets the proxy tell "route this" from "the user picked a
- * model". Capabilities are declared so Claude Code still composes thinking and effort for
- * the tiers that support them; the proxy strips what the routed model cannot accept.
- */
-function autoModelEnv() {
-  const env = {
-    ANTHROPIC_CUSTOM_MODEL_OPTION: AUTO_MODEL,
-    ANTHROPIC_CUSTOM_MODEL_OPTION_NAME: "Jev Router",
-    ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION: "Route each turn to the cheapest model that can do it",
-    ANTHROPIC_CUSTOM_MODEL_OPTION_SUPPORTED_CAPABILITIES:
-      "thinking,adaptive_thinking,interleaved_thinking,effort,max_effort",
-  };
-  // ANTHROPIC_MODEL applies to this session only and is never written to settings, so the
-  // default costs the user nothing permanent. A model they set themselves still wins.
-  if (!process.env.ANTHROPIC_MODEL) env.ANTHROPIC_MODEL = AUTO_MODEL;
-  // Claude Code cannot look the sentinel up in its catalogue, so from v2.1.277 it says so on
-  // every start and assumes 200k. That assumption is right - a turn can land on Haiku at any
-  // point - but it is worth stating rather than being guessed, which also settles the warning.
-  if (!process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS) {
-    env.CLAUDE_CODE_MAX_CONTEXT_TOKENS = String(SMALLEST_CONTEXT_TOKENS);
-  }
-  return env;
-}
 
 /**
  * Claude Code saves a picker row chosen with Enter as the default for new sessions, so the

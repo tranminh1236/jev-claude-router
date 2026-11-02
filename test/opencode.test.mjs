@@ -97,14 +97,16 @@ test("every CLI that must be told a window is told the same one", async () => {
   // routed session may assume. Two CLIs need the number; it is stated once.
   const { SMALLEST_CONTEXT_TOKENS } = await import("../src/config.mjs");
   assert.equal(sentinelLimits().context, SMALLEST_CONTEXT_TOKENS);
+  // autoModelEnv(), the function that tells Claude Code, now lives in src/claude-settings.mjs
+  // (bin/jev-claude.mjs imports it from there) so the picker vars have one definition.
   const source = await import("node:fs").then((fs) =>
-    fs.readFileSync(new URL("../bin/jev-claude.mjs", import.meta.url), "utf8"));
+    fs.readFileSync(new URL("../src/claude-settings.mjs", import.meta.url), "utf8"));
   assert.match(source, /CLAUDE_CODE_MAX_CONTEXT_TOKENS/, "Claude Code has to be told too");
   assert.match(source, /SMALLEST_CONTEXT_TOKENS/, "and told the shared number, not a literal");
 });
 
 test("a window the user set themselves is left alone", async () => {
   const source = await import("node:fs").then((fs) =>
-    fs.readFileSync(new URL("../bin/jev-claude.mjs", import.meta.url), "utf8"));
+    fs.readFileSync(new URL("../src/claude-settings.mjs", import.meta.url), "utf8"));
   assert.match(source, /if \(!process\.env\.CLAUDE_CODE_MAX_CONTEXT_TOKENS\)/);
 });
