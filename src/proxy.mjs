@@ -7,6 +7,7 @@ import { askJev } from "./router.mjs";
 import { decide } from "./policy.mjs";
 import { log, announceServedModel } from "./log.mjs";
 import { writeStatus } from "./status.mjs";
+import { createProxyState } from "./proxy-state.mjs";
 
 const UPSTREAM = "api.anthropic.com";
 const debug = (line) => process.env.JEV_DEBUG && log(line);
@@ -180,26 +181,9 @@ export function isSubagentSpawn({ session, key, routedSessions, convos, prompt, 
 }
 
 export async function startProxy() {
-  // Tier routed for each conversation's turn in flight, reused by its follow-up requests and
-  // by the cache-rebuild guard, which needs to know what the prompt cache was built on.
-  const convos = new Map();
-  // Sessions in which the sentinel has been seen, so a concrete model arriving later can be
-  // told apart: inside one of these a brand-new conversation is a sub-agent Claude Code spawned.
-  const routedSessions = new Set();
-  // Conversation keys known to belong to a sub-agent, so their follow-up requests keep the
-  // tier chosen for them without re-asking Jev, and never touch the main agent's status line.
-  const subagents = new Set();
-  // Conversation keys the user took over with /model. Kept apart from `convos`, which evicts
-  // its oldest entry past 50, because a choice the user made should outlast that.
-  const manual = new Set();
-  const stateFor = (key) => {
-    let s = convos.get(key);
-    if (!s) {
-      if (convos.size > 50) convos.delete(convos.keys().next().value);
-      convos.set(key, (s = { tier: null }));
-    }
-    return s;
-  };
+  // Conversations, routed sessions, sub-agent marks and manual overrides, all aged out by idle
+  // time rather than by count - see src/proxy-state.mjs for the TTL/LRU rationale.
+  const state = createProxyState();
 
   const server = http.createServer((req, res) => {
     // Claude Code probes the base URL before its first request.
@@ -230,10 +214,17 @@ export async function startProxy() {
           // the user reaching for /model.
           const subagent =
             !isAuto(body.model) &&
-            (subagents.has(key) ||
-              isSubagentSpawn({ session, key, routedSessions, convos, prompt, manual }));
+            (state.isSubagent(key) ||
+              isSubagentSpawn({
+                session,
+                key,
+                routedSessions: { has: (s) => state.isRouted(s) },
+                convos: { has: (k) => state.hasConversation(k) },
+                prompt,
+                manual: { has: (k) => state.isManual(k) },
+              }));
 
-          if (!isAuto(body.model) && !subagent && !convos.has(key)) {
+          if (!isAuto(body.model) && !subagent && !state.hasConversation(key)) {
             // Anything that is not the sentinel is a model the user chose, and an explicit
             // choice beats the router. That also covers Claude Code's own cheap Haiku calls
             // for titles and summaries, which must never be pinned up to the session's tier.
@@ -246,27 +237,27 @@ export async function startProxy() {
           } else if (!isAuto(body.model) && !subagent) {
             // A conversation we route, now naming a real model: the user picked one with
             // /model inside it. Hand the conversation back and stop routing it - for good,
-            // not for one turn: dropping it from `convos` alone would make its next turn look
+            // not for one turn: dropping it from `state` alone would make its next turn look
             // like a fresh conversation inside a routed session, which is a sub-agent spawn.
             debug(`passthrough, user selected ${body.model}`);
-            convos.delete(key);
-            manual.add(key);
+            state.forget(key);
+            state.markManual(key);
             writeStatus(session, { manual: true, at: Date.now() });
           } else {
-            if (isAuto(body.model)) routedSessions.add(session);
-            const state = stateFor(key);
+            if (isAuto(body.model)) state.markRouted(session);
+            const convo = state.conversation(key);
             // What the prompt cache was built on, which is what a downgrade would discard.
-            const current = state.tier ?? "sonnet";
+            const current = convo.tier ?? "sonnet";
             let fresh = null;
             if (prompt) {
               const available = availableTiers();
               const contextTokens = Math.round(JSON.stringify(body.messages).length / 4);
               const jev = await askJev({ prompt, current, contextTokens, available });
               const { tier, reason, cheapStreak } = decide({
-                prompt, jev, current, available, contextTokens, cheapStreak: state.cheapStreak ?? 0,
+                prompt, jev, current, available, contextTokens, cheapStreak: convo.cheapStreak ?? 0,
               });
-              state.tier = tier;
-              state.cheapStreak = cheapStreak;
+              convo.tier = tier;
+              convo.cheapStreak = cheapStreak;
               fresh = { confidence: jev?.confidence ?? null, reason };
               debug(
                 `${key}${subagent ? " subagent" : ""} ` +
@@ -276,16 +267,16 @@ export async function startProxy() {
             }
             // The sentinel is not a real model, so every routed request must be rewritten,
             // including follow-ups that reuse the tier chosen for the turn.
-            const tier = state.tier ?? current;
+            const tier = convo.tier ?? current;
             debug(`${key} rewrite ${body.model} -> ${idOf(tier)}`);
             applyTier(body, tier);
             // Publish what went out. Claude Code's UI shows the row you picked, not the tier
             // it resolved to, so the status line is the only place this is visible. A
             // sub-agent's tier is its own business and must not overwrite the main agent's.
-            if (!subagent && !subagents.has(key)) {
+            if (!subagent && !state.isSubagent(key)) {
               writeStatus(session, { tier, ...fresh, at: Date.now() });
             }
-            if (subagent) subagents.add(key);
+            if (subagent) state.markSubagent(key);
           }
           out = Buffer.from(JSON.stringify(body));
         } catch (err) {
