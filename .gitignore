@@ -9,3 +9,6 @@ node_modules/
 # Debug artefacts: JEV_DUMP writes raw request bodies, which contain your prompts and code.
 *.dump.json
 jev-dump*
+
+# Isolated worktrees for plan execution (superpowers:using-git-worktrees)
+.worktrees/
