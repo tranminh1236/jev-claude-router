@@ -176,6 +176,17 @@ export async function stopDaemon() {
     return { stopped: false, via: "none" };
   }
 
+  // Confirm the pid file still names our daemon before signaling it - the same hazard probe()'s
+  // doc comment calls out for startDaemon/daemonStatus applies here too: a SIGKILLed daemon's
+  // pid can be reused by an unrelated process, and signaling on the pid file alone would then
+  // SIGTERM whatever process happened to inherit that number. "foreign" is treated the same as
+  // "dead" here - there is nothing of ours left to signal either way, and killing the wrong
+  // process is strictly worse than a no-op.
+  if ((await probe(port)) !== "ours") {
+    cleanupFiles(paths);
+    return { stopped: true, via: "none" };
+  }
+
   try {
     process.kill(pid, "SIGTERM");
   } catch {
