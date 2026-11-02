@@ -132,8 +132,14 @@ export const availableTiers = () => {
 };
 
 export const THRESHOLDS = {
-  /** Below this Jev confidence we refuse to downgrade and cap upgrades at `uncertainCeiling`. */
-  minConfidence: 0.6,
+  /**
+   * Below this probability for the top answer we refuse to downgrade and cap upgrades at
+   * `uncertainCeiling`. Confidence measures how concentrated the whole distribution is, not
+   * how likely the top answer is to be right — a distribution can be spread across two tiers
+   * and still have one of them clearly the better bet, or sharply peaked on a wrong one. The
+   * gate gives the benefit of the doubt only when the top answer itself is actually unlikely.
+   */
+  minTopProbability: 0.6,
   /** Safest tier to land on when Jev is unsure. */
   uncertainCeiling: "sonnet",
   /**

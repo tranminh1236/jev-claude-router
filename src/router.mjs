@@ -32,6 +32,10 @@ function getClient() {
  * Asks Jev which tier fits this prompt. Returns null on any failure, which the policy
  * layer reads as "keep the current model" — routing must never block a prompt.
  *
+ * Of the answer itself, the policy layer gates on `probabilities[choice]` — the top answer's
+ * own odds of being right — not `confidence`, which only measures how concentrated the whole
+ * distribution is. `confidence` is read only as a fallback, for an answer with no distribution.
+ *
  * Only the request is sent. Measured on 2026-09-18 against four prompts spanning all four
  * tiers, adding the current model, the context size or the available tiers changed no choice
  * and lowered confidence on three of the four — they read as noise, not signal. The current
