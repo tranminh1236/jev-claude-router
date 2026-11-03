@@ -195,3 +195,12 @@ test("nothing is rewritten when no shell is involved", () => {
   const args = ['a="b c"', "plain"];
   assert.deepEqual(shellSafe(args, false), args);
 });
+
+test("jev-router dispatches daemon subcommands and refuses unknown ones", () => {
+  const ok = spawnSync(process.execPath, [join(BIN, "jev-router.mjs"), "daemon", "status"], { encoding: "utf8" });
+  assert.equal(ok.status, 0);
+  assert.match(ok.stdout, /daemon/i);
+  const bad = spawnSync(process.execPath, [join(BIN, "jev-router.mjs"), "nonsense"], { encoding: "utf8" });
+  assert.notEqual(bad.status, 0);
+  assert.match(bad.stderr, /usage/i);
+});
