@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { loadEnv } from "../src/env.mjs";
 import { DEFAULT_PORT, startDaemon, stopDaemon, daemonStatus } from "../src/daemon.mjs";
+import { installAgent, uninstallAgent, verifyAgent } from "../src/launchd.mjs";
 
 // Same as every other launcher: a manually-run `jev-daemon start` still needs the proxy's
 // own JEV_API_KEY lookup to see ~/.jev-router.env, since nothing else loads it for this process.
@@ -42,6 +43,9 @@ async function cmdStop() {
   }
   if (stopped) {
     process.stderr.write(`[jev-daemon] stopped (${via})\n`);
+    // The proxy's base URL in settings.json never changes just because the daemon stopped -
+    // any session opened before this still points at the now-dead port until it is restarted.
+    process.stderr.write(`[jev-daemon] sessions already open still point at this port until you restart them\n`);
     return true;
   }
   process.stderr.write(`[jev-daemon] could not stop it (${via}); see daemon.log\n`);
@@ -52,10 +56,54 @@ async function cmdStatus() {
   const status = await daemonStatus();
   if (status.running) {
     process.stderr.write(`[jev-daemon] running on port ${status.port} (pid ${status.pid}, via ${status.via})\n`);
-    return true;
+  } else {
+    process.stderr.write(`[jev-daemon] not running (port ${status.port})\n`);
   }
-  process.stderr.write(`[jev-daemon] not running (port ${status.port})\n`);
-  return false;
+
+  const { ok, reasons } = verifyAgent({});
+  if (status.plist) {
+    process.stderr.write(`[jev-daemon] launchd agent: ${status.plist}\n`);
+  }
+  if (!ok) {
+    for (const reason of reasons) {
+      process.stderr.write(`[jev-daemon] launchd agent problem: ${reason}\n`);
+    }
+    process.stderr.write(`[jev-daemon] re-run \`jev-daemon install\`\n`);
+  }
+
+  return status.running;
+}
+
+async function cmdInstall() {
+  try {
+    const { plist, patched } = await installAgent({ port });
+    for (const key of patched.changed) {
+      process.stderr.write(`[jev-daemon] + ${key}\n`);
+    }
+    for (const key of patched.skipped) {
+      process.stderr.write(`[jev-daemon] = ${key} (already set, left alone)\n`);
+    }
+    process.stderr.write(`[jev-daemon] installed ${plist}\n`);
+    process.stderr.write(`[jev-daemon] undo with: jev-daemon uninstall\n`);
+    return true;
+  } catch (err) {
+    process.stderr.write(`[jev-daemon] install failed: ${err.message}\n`);
+    return false;
+  }
+}
+
+async function cmdUninstall() {
+  try {
+    const { restored } = await uninstallAgent({});
+    for (const key of restored) {
+      process.stderr.write(`[jev-daemon] - ${key}\n`);
+    }
+    process.stderr.write(`[jev-daemon] uninstalled\n`);
+    return true;
+  } catch (err) {
+    process.stderr.write(`[jev-daemon] uninstall failed: ${err.message}\n`);
+    return false;
+  }
 }
 
 let ok;
@@ -75,8 +123,16 @@ switch (command) {
   case "status":
     ok = await cmdStatus();
     break;
+  case "install":
+    ok = await cmdInstall();
+    break;
+  case "uninstall":
+    ok = await cmdUninstall();
+    break;
   default:
-    process.stderr.write(`[jev-daemon] usage: jev-daemon <start|stop|restart|status> [--foreground] [--port N]\n`);
+    process.stderr.write(
+      `[jev-daemon] usage: jev-daemon <start|stop|restart|status|install|uninstall> [--foreground] [--port N]\n`,
+    );
     ok = false;
 }
 

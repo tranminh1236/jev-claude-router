@@ -1,9 +1,10 @@
 import http from "node:http";
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { LABEL, launchdLoaded, plistPath } from "./launchd.mjs";
 import { MARKER_HEADER, startProxy } from "./proxy.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -52,6 +53,27 @@ const readPortFile = (file) => {
   const port = raw ? Number(raw) : NaN;
   return Number.isInteger(port) ? port : null;
 };
+
+/**
+ * Stops the job the way launchd itself expects to be told, not with a bare `process.kill`:
+ * `KeepAlive: true` on the agent would otherwise respawn a SIGTERM'd daemon within seconds,
+ * making a plain `stop` look like it silently failed. Tries the modern `bootout` target first
+ * and falls back to legacy `unload -w`, same as src/launchd.mjs's own loadJob/unloadJob, since
+ * that module doesn't export either and duplicating this one call is cheaper than widening its
+ * exported surface for a single caller.
+ */
+function stopViaLaunchctl(home = homedir()) {
+  return new Promise((resolve, reject) => {
+    const uid = typeof process.getuid === "function" ? process.getuid() : 0;
+    execFile("launchctl", ["bootout", `gui/${uid}/${LABEL}`], (err) => {
+      if (!err) return resolve();
+      execFile("launchctl", ["unload", "-w", plistPath(home)], (err2) => {
+        if (err2) reject(err2);
+        else resolve();
+      });
+    });
+  });
+}
 
 const cleanupFiles = (paths) => {
   for (const file of [paths.pid, paths.port]) {
@@ -162,9 +184,9 @@ export async function startDaemon({ port = DEFAULT_PORT, foreground = false } = 
 }
 
 /**
- * Stops the daemon. Only a signal path exists here: Task 5 adds `launchdLoaded()` and this
- * function then prefers `launchctl` when the agent is installed, because `KeepAlive: true`
- * would otherwise respawn a SIGTERM'd process within seconds.
+ * Stops the daemon. `KeepAlive: true` on the launchd agent would respawn a plain SIGTERM
+ * within seconds, so once the agent is installed this drives `launchctl` instead and falls
+ * back to the pid-file signal path otherwise (manual use, or another platform).
  */
 export async function stopDaemon() {
   const paths = statePaths();
@@ -176,21 +198,38 @@ export async function stopDaemon() {
     return { stopped: false, via: "none" };
   }
 
-  // Confirm the pid file still names our daemon before signaling it - the same hazard probe()'s
-  // doc comment calls out for startDaemon/daemonStatus applies here too: a SIGKILLed daemon's
-  // pid can be reused by an unrelated process, and signaling on the pid file alone would then
-  // SIGTERM whatever process happened to inherit that number. "foreign" is treated the same as
-  // "dead" here - there is nothing of ours left to signal either way, and killing the wrong
-  // process is strictly worse than a no-op.
+  // Confirm the pid file still names our daemon before touching anything - the same hazard
+  // probe()'s doc comment calls out for startDaemon/daemonStatus applies here too: a SIGKILLed
+  // daemon's pid can be reused by an unrelated process, and signaling (or stopping the launchd
+  // job) on the pid file alone would then act on whatever process happened to inherit that
+  // number. "foreign" is treated the same as "dead" here - there is nothing of ours left to
+  // stop either way, and acting on the wrong process is strictly worse than a no-op.
   if ((await probe(port)) !== "ours") {
     cleanupFiles(paths);
     return { stopped: true, via: "none" };
   }
 
-  try {
-    process.kill(pid, "SIGTERM");
-  } catch {
-    // Already gone - a stale pid file naming a process that no longer exists.
+  const underLaunchd = await launchdLoaded();
+  let via = "signal";
+  if (underLaunchd) {
+    try {
+      await stopViaLaunchctl();
+      via = "launchd";
+    } catch {
+      // launchctl itself refused (odd state - installed but unreachable) - fall through to the
+      // signal path below rather than leaving the daemon with no way to be stopped at all.
+      try {
+        process.kill(pid, "SIGTERM");
+      } catch {
+        // Already gone.
+      }
+    }
+  } else {
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch {
+      // Already gone - a stale pid file naming a process that no longer exists.
+    }
   }
 
   const deadline = Date.now() + 5000;
@@ -201,25 +240,26 @@ export async function stopDaemon() {
   }
 
   cleanupFiles(paths);
-  return { stopped: state !== "ours", via: "signal" };
+  return { stopped: state !== "ours", via };
 }
 
 /**
  * Liveness here is the probe too, for display purposes as much as correctness: a pid file left
  * over from a killed process must never be reported as a running daemon just because the file
- * exists.
+ * exists. `via`/`plist` read `launchdLoaded()` live rather than assuming from the plist file's
+ * mere presence, so an agent that was installed and then unloaded reports "signal" correctly.
  */
 export async function daemonStatus() {
   const paths = statePaths();
   const port = readPortFile(paths.port) ?? DEFAULT_PORT;
   const state = await probe(port);
   const running = state === "ours";
+  const underLaunchd = await launchdLoaded();
   return {
     running,
     port,
     pid: running ? readPidFile(paths.pid) : null,
-    // "launchd" arrives with Task 5's launchdLoaded(); until then every path is a plain signal.
-    via: "signal",
-    plist: null,
+    via: underLaunchd ? "launchd" : "signal",
+    plist: underLaunchd ? plistPath() : null,
   };
 }
