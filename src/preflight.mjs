@@ -1,6 +1,6 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { DEFAULT_PORT, probe, startDaemon } from "./daemon.mjs";
+import { defaultPort, probe, startDaemon } from "./daemon.mjs";
 import { unpatchSettings, writeAtomic } from "./claude-settings.mjs";
 
 // Real implementations by default so the CLI subcommand (which never passes `deps`) gets fully
@@ -70,7 +70,7 @@ export function rememberSession({ file, sessionId, cwd, max = 200 }) {
  * own inner try/catch for the same reason, scoped narrowly enough that a bookkeeping failure
  * can't quietly turn a real "revived"/"disarmed" result into a misleading "healthy" one.
  */
-export async function preflight({ input, port = DEFAULT_PORT, paths, deps = {} }) {
+export async function preflight({ input, port = defaultPort(), paths, deps = {} }) {
   const d = { ...DEFAULT_DEPS, ...deps };
 
   try {

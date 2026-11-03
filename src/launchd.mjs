@@ -290,7 +290,7 @@ export async function installAgent({ port, home = homedir() } = {}) {
     const patched = patchSettings({
       file: settingsFile,
       port,
-      hookCommand: "jev-router preflight",
+      hookCommand: `jev-router preflight --port ${port}`,
       bookkeeping: paths.install,
     });
 

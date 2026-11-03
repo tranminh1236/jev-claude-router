@@ -12,8 +12,13 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 // can be launched from any working directory (launchd gives it none at all).
 const DAEMON_BIN = join(HERE, "..", "bin", "jev-daemon.mjs");
 
-/** Overridable so a machine with the default port already taken by something else can move. */
-export const DEFAULT_PORT = Number(process.env.JEV_DAEMON_PORT) || 61820;
+/**
+ * Overridable so a machine with the default port already taken by something else can move.
+ * A function, not a frozen constant, so it reads JEV_DAEMON_PORT fresh on every call: callers
+ * read this well after a CLI entrypoint's own loadEnv() has populated process.env from
+ * ~/.jev-router.env, and a constant computed at this module's import time would miss that.
+ */
+export const defaultPort = () => Number(process.env.JEV_DAEMON_PORT) || 61820;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -168,7 +173,7 @@ async function spawnDetached({ port, paths }) {
  * otherwise make every subsequent `start` either no-op against nothing or signal an unrelated
  * process that happens to have reused the pid.
  */
-export async function startDaemon({ port = DEFAULT_PORT, foreground = false } = {}) {
+export async function startDaemon({ port = defaultPort(), foreground = false } = {}) {
   const paths = statePaths();
   const state = await probe(port);
   if (state === "ours") {
@@ -191,7 +196,7 @@ export async function startDaemon({ port = DEFAULT_PORT, foreground = false } = 
 export async function stopDaemon() {
   const paths = statePaths();
   const pid = readPidFile(paths.pid);
-  const port = readPortFile(paths.port) ?? DEFAULT_PORT;
+  const port = readPortFile(paths.port) ?? defaultPort();
 
   if (pid == null) {
     cleanupFiles(paths);
@@ -251,7 +256,7 @@ export async function stopDaemon() {
  */
 export async function daemonStatus() {
   const paths = statePaths();
-  const port = readPortFile(paths.port) ?? DEFAULT_PORT;
+  const port = readPortFile(paths.port) ?? defaultPort();
   const state = await probe(port);
   const running = state === "ours";
   const underLaunchd = await launchdLoaded();

@@ -2,7 +2,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadEnv } from "../src/env.mjs";
-import { DEFAULT_PORT, startDaemon, stopDaemon, daemonStatus, statePaths } from "../src/daemon.mjs";
+import { defaultPort, startDaemon, stopDaemon, daemonStatus, statePaths } from "../src/daemon.mjs";
 import { installAgent, uninstallAgent, verifyAgent } from "../src/launchd.mjs";
 import { preflight } from "../src/preflight.mjs";
 import { USER_SETTINGS } from "../src/settings.mjs";
@@ -20,7 +20,7 @@ function flagValue(name, fallback) {
   return i === -1 || i === args.length - 1 ? fallback : args[i + 1];
 }
 
-const port = Number(flagValue("--port", DEFAULT_PORT));
+const port = Number(flagValue("--port", defaultPort()));
 
 async function cmdStart() {
   try {

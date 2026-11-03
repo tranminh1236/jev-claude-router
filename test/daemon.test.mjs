@@ -3,11 +3,24 @@ import assert from "node:assert/strict";
 import http from "node:http";
 import os from "node:os";
 import { startProxy, MARKER_HEADER } from "../src/proxy.mjs";
-import { probe } from "../src/daemon.mjs";
+import { defaultPort, probe } from "../src/daemon.mjs";
 
 const listen = (handler) => new Promise((done) => {
   const s = http.createServer(handler);
   s.listen(0, "127.0.0.1", () => done({ port: s.address().port, close: () => s.close() }));
+});
+
+test("defaultPort reads JEV_DAEMON_PORT fresh on each call, not at import time", () => {
+  const before = process.env.JEV_DAEMON_PORT;
+  try {
+    delete process.env.JEV_DAEMON_PORT;
+    assert.equal(defaultPort(), 61820);
+    process.env.JEV_DAEMON_PORT = "61888";
+    assert.equal(defaultPort(), 61888);
+  } finally {
+    if (before === undefined) delete process.env.JEV_DAEMON_PORT;
+    else process.env.JEV_DAEMON_PORT = before;
+  }
 });
 
 test("our own proxy answers the probe with a marker", async () => {
