@@ -39,6 +39,18 @@ test("a daemon that cannot be revived disarms the patch so the next session is p
   assert.match(out.notice, /61820|routing is off/i);
 });
 
+test("a foreign server on the port disarms the patch instead of being treated as healthy", async () => {
+  let unpatched = 0;
+  const out = await preflight({
+    input, port: 1, paths: paths(),
+    deps: { probe: async () => "foreign", unpatchSettings: () => unpatched++ },
+  });
+  assert.equal(out.outcome, "disarmed");
+  assert.equal(unpatched, 1);
+  assert.match(out.notice, /port 1\b/);
+  assert.doesNotMatch(out.notice, /would not start/, "must use the foreign-specific message, not the dead-daemon one");
+});
+
 test("the session map is bounded and keeps the newest entries", () => {
   const file = join(mkdtempSync(join(tmpdir(), "jev-sessions-")), "sessions.json");
   for (let i = 0; i < 5; i++) rememberSession({ file, sessionId: `s${i}`, cwd: `/p/${i}`, max: 3 });

@@ -51,14 +51,17 @@ export function rememberSession({ file, sessionId, cwd, max = 200 }) {
  * The SessionStart hook's entire job: make sure *some* daemon of ours is reachable before the
  * session's first request hits it, without ever being the reason a session fails to open.
  *
- * Three outcomes, cheapest first:
- *  - "healthy": the probe alone says a daemon of ours (or, harmlessly, someone else's server on
- *    the same port - not this hook's problem) is already up. One probe, no process spawn.
+ * Four states, cheapest first:
+ *  - "healthy": the probe says a daemon of ours is already up. One probe, no process spawn.
+ *  - "disarmed" (foreign): the probe finds a server on the port that isn't ours. A stranger
+ *    there would receive every session's auth header and prompt if left "healthy" - settings
+ *    already points Claude Code at this port, so the patch comes back out rather than routing
+ *    traffic at whatever that is.
  *  - "revived": the probe says dead, `startDaemon` brings one up. This is the common case right
  *    after a reboot, before launchd's own keep-alive has had a chance to restart it.
- *  - "disarmed": `startDaemon` itself throws (port stolen by something else, a spawn that never
- *    came up). Nothing left to retry, so the settings patch comes back out - a session that
- *    starts against a dead proxy URL would otherwise hang or error on every single request,
+ *  - "disarmed" (dead): `startDaemon` itself throws (port stolen by something else, a spawn that
+ *    never came up). Nothing left to retry, so the settings patch comes back out - a session
+ *    that starts against a dead proxy URL would otherwise hang or error on every single request,
  *    which is strictly worse than just running plain Claude Code for this and future sessions.
  *
  * The whole function is wrapped in one outer try/catch that resolves "healthy" on anything
@@ -82,10 +85,31 @@ export async function preflight({ input, port = DEFAULT_PORT, paths, deps = {} }
       }
     };
 
+    const disarm = (notice) => {
+      try {
+        d.unpatchSettings({ file: paths.settings, bookkeeping: paths.bookkeeping });
+      } catch {
+        // Even if the settings file itself can't be touched (unwritable, already gone), the
+        // notice below is still the right thing to surface.
+      }
+      return { outcome: "disarmed", notice };
+    };
+
     const state = await d.probe(port);
-    if (state !== "dead") {
+
+    if (state === "ours") {
       remember();
       return { outcome: "healthy", notice: null };
+    }
+
+    if (state === "foreign") {
+      // A stranger on this port would receive every session's auth header and prompt if left
+      // "healthy" - settings.json already points Claude Code here, so this is the last guard,
+      // not a harmless no-op. startDaemon/installAgent already refuse before ever patching;
+      // this is the same refusal for the one state that matters most - already patched.
+      return disarm(
+        `jev-router: port ${port} is held by something that isn't jev-router; routing is off until \`jev-daemon install\` is re-run on a free port`,
+      );
     }
 
     try {
@@ -93,16 +117,9 @@ export async function preflight({ input, port = DEFAULT_PORT, paths, deps = {} }
       remember();
       return { outcome: "revived", notice: null };
     } catch (err) {
-      try {
-        d.unpatchSettings({ file: paths.settings, bookkeeping: paths.bookkeeping });
-      } catch {
-        // Even if the settings file itself can't be touched (unwritable, already gone), the
-        // notice below is still the right thing to surface - the daemon is dead either way.
-      }
-      return {
-        outcome: "disarmed",
-        notice: `jev-router: daemon would not start (${err.message}); routing is off until \`jev-daemon install\` is re-run`,
-      };
+      return disarm(
+        `jev-router: daemon would not start (${err.message}); routing is off until \`jev-daemon install\` is re-run`,
+      );
     }
   } catch {
     return { outcome: "healthy", notice: null };
