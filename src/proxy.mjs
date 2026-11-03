@@ -112,6 +112,13 @@ export function applyTier(body, tierName) {
     delete body.output_config.effort;
     if (Object.keys(body.output_config).length === 0) delete body.output_config;
   }
+  // The client composed `max_tokens` for the model it thinks it is calling, but this function
+  // may just have rewritten that to a cheaper tier with a lower ceiling (haiku's measured
+  // 64000, see config.mjs) - forwarding the original value unchanged is a live 400 the moment
+  // that happens, so clamp down, never up.
+  if (tier.maxOutputTokens && typeof body.max_tokens === "number" && body.max_tokens > tier.maxOutputTokens) {
+    body.max_tokens = tier.maxOutputTokens;
+  }
   return body;
 }
 

@@ -187,6 +187,36 @@ test("an unknown tier leaves the request untouched", () => {
   assert.equal(body.model, "claude-sonnet-4-6");
 });
 
+test("routing to haiku clamps max_tokens composed for a bigger tier", () => {
+  const body = { model: "claude-sonnet-4-6", max_tokens: 128000 };
+  applyTier(body, "haiku");
+  assert.equal(body.max_tokens, 64000);
+});
+
+test("routing to haiku leaves max_tokens alone when already under the cap", () => {
+  const body = { model: "claude-sonnet-4-6", max_tokens: 40000 };
+  applyTier(body, "haiku");
+  assert.equal(body.max_tokens, 40000, "the clamp only lowers a value over the cap, never raises one");
+});
+
+test("routing to sonnet leaves max_tokens at exactly the cap", () => {
+  const body = { model: "jev-auto", max_tokens: 128000 };
+  applyTier(body, "sonnet");
+  assert.equal(body.max_tokens, 128000, "exactly at the cap is not over it");
+});
+
+test("a body with no max_tokens is left untouched", () => {
+  const body = { model: "jev-auto" };
+  applyTier(body, "haiku");
+  assert.equal("max_tokens" in body, false, "the clamp must not invent a max_tokens field");
+});
+
+test("an unknown tier leaves max_tokens alone too", () => {
+  const body = { model: "claude-sonnet-4-6", max_tokens: 128000 };
+  applyTier(body, "nonsense");
+  assert.equal(body.max_tokens, 128000);
+});
+
 test("a conversation keeps one key as it grows, and differs from a sub-agent", () => {
   const main = { messages: [{ role: "user", content: "main task" }] };
   const grown = {
