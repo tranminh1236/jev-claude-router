@@ -232,6 +232,15 @@ function reversePatch(settings, fileRecord) {
   const restored = [];
   const next = { ...settings };
 
+  // Selecting the Jev Router row with Enter makes Claude Code save "jev-auto" as the
+  // default model. Once this reverse step runs (uninstall, or preflight's disarm), nothing
+  // can resolve that sentinel any more - see src/settings.mjs's restoreSavedModel for the
+  // same rule applied to a CLI session's own temporary override.
+  if (next.model === AUTO_MODEL) {
+    delete next.model;
+    restored.push("model");
+  }
+
   if (settings.env !== undefined) {
     const env = { ...settings.env };
     for (const key of fileRecord.envKeys ?? []) {

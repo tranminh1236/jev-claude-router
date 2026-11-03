@@ -128,3 +128,27 @@ test("a hookCommand change between two patches leaves nothing behind after unpat
   unpatchSettings({ file: s.file, bookkeeping: s.bookkeeping });
   assert.deepEqual(s.read(), {}, "both hooks removed, and the keys this module created are gone too");
 });
+
+test("unpatch clears a saved jev-auto sentinel left behind by the picker", () => {
+  const s = sandbox({ env: { CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN: "1" } });
+  patch(s);
+  // Simulate Claude Code saving the picker row Enter-selected, mid-session.
+  const mid = s.read();
+  mid.model = "jev-auto";
+  writeFileSync(s.file, JSON.stringify(mid, null, 2));
+
+  const { restored } = unpatchSettings({ file: s.file, bookkeeping: s.bookkeeping });
+  assert.ok(restored.includes("model"));
+  assert.equal(s.read().model, undefined);
+});
+
+test("unpatch leaves a real model the user chose alone", () => {
+  const s = sandbox({});
+  patch(s);
+  const mid = s.read();
+  mid.model = "opus";
+  writeFileSync(s.file, JSON.stringify(mid, null, 2));
+
+  unpatchSettings({ file: s.file, bookkeeping: s.bookkeeping });
+  assert.equal(s.read().model, "opus");
+});
