@@ -1,7 +1,11 @@
 #!/usr/bin/env node
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { loadEnv } from "../src/env.mjs";
-import { DEFAULT_PORT, startDaemon, stopDaemon, daemonStatus } from "../src/daemon.mjs";
+import { DEFAULT_PORT, startDaemon, stopDaemon, daemonStatus, statePaths } from "../src/daemon.mjs";
 import { installAgent, uninstallAgent, verifyAgent } from "../src/launchd.mjs";
+import { preflight } from "../src/preflight.mjs";
+import { USER_SETTINGS } from "../src/settings.mjs";
 
 // Same as every other launcher: a manually-run `jev-daemon start` still needs the proxy's
 // own JEV_API_KEY lookup to see ~/.jev-router.env, since nothing else loads it for this process.
@@ -92,6 +96,37 @@ async function cmdInstall() {
   }
 }
 
+/**
+ * What Claude Code's SessionStart hook actually invokes. Reads the hook's JSON off stdin
+ * rather than argv - that's the contract the hook itself is written against - and never exits
+ * nonzero: a nonzero exit from a SessionStart hook can block the session it's supposed to be
+ * protecting, which is exactly the failure mode `preflight` (src/preflight.mjs) exists to avoid.
+ */
+async function cmdPreflight() {
+  let input;
+  try {
+    // readFileSync(0, ...) rather than an async stream reader - this is a one-shot hook
+    // invocation, not a long-lived process, so there's nothing to gain from not blocking here.
+    input = JSON.parse(readFileSync(0, "utf8"));
+  } catch {
+    // Empty or malformed stdin (e.g. the hook invoked with nothing piped in during manual
+    // testing) must not crash the hook - treat it as "no session info" and let preflight's own
+    // probe decide the outcome.
+    input = { session_id: null, cwd: null };
+  }
+
+  const daemonPaths = statePaths();
+  const paths = {
+    sessions: join(daemonPaths.dir, "sessions.json"),
+    settings: USER_SETTINGS,
+    bookkeeping: daemonPaths.install,
+  };
+
+  const { notice } = await preflight({ input, port, paths });
+  if (notice) process.stderr.write(`${notice}\n`);
+  return true; // Always "ok" - see the doc comment above.
+}
+
 async function cmdUninstall() {
   try {
     const { restored } = await uninstallAgent({});
@@ -129,9 +164,12 @@ switch (command) {
   case "uninstall":
     ok = await cmdUninstall();
     break;
+  case "preflight":
+    ok = await cmdPreflight();
+    break;
   default:
     process.stderr.write(
-      `[jev-daemon] usage: jev-daemon <start|stop|restart|status|install|uninstall> [--foreground] [--port N]\n`,
+      `[jev-daemon] usage: jev-daemon <start|stop|restart|status|install|uninstall|preflight> [--foreground] [--port N]\n`,
     );
     ok = false;
 }
