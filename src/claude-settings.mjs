@@ -295,7 +295,7 @@ function reversePatch(settings, fileRecord) {
  * data (plus, best-effort, the directory entry) is fsynced before the rename, so the write
  * survives a crash rather than merely avoiding a truncation.
  */
-function writeAtomic(resolvedFile, contents) {
+export function writeAtomic(resolvedFile, contents) {
   const dir = dirname(resolvedFile);
   const tmpFile = join(dir, `.${basename(resolvedFile)}.jev-tmp-${process.pid}-${Date.now()}`);
 

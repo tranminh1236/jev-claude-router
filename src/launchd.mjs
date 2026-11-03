@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { patchSettings, unpatchSettings } from "./claude-settings.mjs";
+import { patchSettings, unpatchSettings, writeAtomic } from "./claude-settings.mjs";
 import { probe, statePaths } from "./daemon.mjs";
 import { ENV_FILE_HINT, jevKey, loadEnv } from "./env.mjs";
 
@@ -122,6 +122,7 @@ async function assertLaunchctlUsable() {
  * neither failing cleanly is the case that must produce one clear message, not a silent no-op.
  */
 async function loadJob(plist) {
+  await unloadJob(plist, LABEL).catch(() => {});
   try {
     await run("launchctl", ["bootstrap", guiDomain(), plist]);
   } catch (bootstrapErr) {
@@ -188,7 +189,7 @@ function readBookkeepingFile(path) {
 
 function writeBookkeepingFile(path, record) {
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, `${JSON.stringify(record, null, 2)}\n`);
+  writeAtomic(path, `${JSON.stringify(record, null, 2)}\n`);
 }
 
 function saveLaunchdRecord(path, data) {
@@ -249,7 +250,12 @@ export async function installAgent({ port, home = homedir() } = {}) {
 
   const settingsFile = join(home, ".claude", "settings.json");
   const rollback = async () => {
-    await unloadJob(plist, LABEL).catch(() => {});
+    let unloadErr = null;
+    try {
+      await unloadJob(plist, LABEL);
+    } catch (err) {
+      unloadErr = err;
+    }
     rmSync(plist, { force: true });
     removeLaunchdRecord(paths.install);
     try {
@@ -258,6 +264,7 @@ export async function installAgent({ port, home = homedir() } = {}) {
       // Best effort: in the common case patchSettings never ran (or never got past its own
       // first write) and there is nothing here for this to undo.
     }
+    return unloadErr;
   };
 
   try {
@@ -289,7 +296,10 @@ export async function installAgent({ port, home = homedir() } = {}) {
 
     return { plist, patched };
   } catch (err) {
-    await rollback();
+    const unloadErr = await rollback();
+    if (unloadErr) {
+      err.message += ` (rollback could not unload the agent: ${unloadErr.message}; run \`launchctl bootout ${guiDomain()}/${LABEL}\` by hand)`;
+    }
     throw err;
   }
 }
@@ -299,11 +309,13 @@ export async function uninstallAgent({ home = homedir() } = {}) {
   const plist = plistPath(home);
   const paths = statePaths(home);
 
+  // Best effort: a job already gone, or a launchctl that can't be reached, is not a reason
+  // to leave the plist file and the settings patch behind - there is nothing left to protect
+  // by refusing to clean up. Attempted even when the plist is already gone - `bootout` finds
+  // the job by label, not by the plist file, so a job orphaned by a rollback that deleted the
+  // plist but couldn't unload it is still reachable here.
+  await unloadJob(plist, LABEL).catch(() => {});
   if (existsSync(plist)) {
-    // Best effort: a job already gone, or a launchctl that can't be reached, is not a reason
-    // to leave the plist file and the settings patch behind - there is nothing left to protect
-    // by refusing to clean up.
-    await unloadJob(plist, LABEL).catch(() => {});
     rmSync(plist, { force: true });
   }
   removeLaunchdRecord(paths.install);
