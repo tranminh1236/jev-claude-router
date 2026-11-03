@@ -196,10 +196,20 @@ test("nothing is rewritten when no shell is involved", () => {
   assert.deepEqual(shellSafe(args, false), args);
 });
 
-test("jev-router dispatches daemon subcommands and refuses unknown ones", () => {
-  const ok = spawnSync(process.execPath, [join(BIN, "jev-router.mjs"), "daemon", "status"], { encoding: "utf8" });
-  assert.equal(ok.status, 0);
+test("jev-router dispatches daemon subcommands, honors JEV_DAEMON_PORT at call time, and refuses unknown ones", () => {
+  const home = isolatedHome();
+  writeFileSync(join(home, ".jev-router.env"), "JEV_DAEMON_PORT=61888\n");
+
+  const ok = spawnSync(process.execPath, [join(BIN, "jev-router.mjs"), "daemon", "status"], {
+    encoding: "utf8",
+    env: { HOME: home, USERPROFILE: home, PATH: process.env.PATH ?? "" },
+  });
+  // No daemon has ever run against this isolated home, so this is a clean read of the
+  // "not running" path - not a claim about any daemon on whatever machine runs the suite.
+  assert.equal(ok.status, 1, `expected "not running", got:\n${ok.stdout}${ok.stderr}`);
   assert.match(ok.stdout, /daemon/i);
+  assert.match(ok.stderr, /port 61888/, "JEV_DAEMON_PORT from ~/.jev-router.env must reach daemonStatus, not a module-load-time snapshot");
+
   const bad = spawnSync(process.execPath, [join(BIN, "jev-router.mjs"), "nonsense"], { encoding: "utf8" });
   assert.notEqual(bad.status, 0);
   assert.match(bad.stderr, /usage/i);
