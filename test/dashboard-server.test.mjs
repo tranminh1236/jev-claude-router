@@ -115,6 +115,28 @@ test("GET / returns an HTML page and an unknown path 404s", async (t) => {
   assert.equal(missing.status, 404);
 });
 
+/**
+ * Review finding #3: the page never showed confidence, never showed how many rows had no
+ * usage data (computeSavings already counts them as rowsWithoutUsage), and had no way to
+ * narrow the table to one project or provider in a log shared across every routed session.
+ */
+test("the dashboard page shows confidence, rows without usage, and project/provider filters", async (t) => {
+  const decisionsFile = tmpFile("decisions");
+  const sessionsFile = tmpFile("sessions");
+  writeFileSync(decisionsFile, "");
+  writeFileSync(sessionsFile, "{}");
+
+  const { port, close } = await createDashboardServer({ decisionsFile, sessionsFile });
+  t.after(() => close());
+
+  const html = await fetch(`http://127.0.0.1:${port}/`).then((r) => r.text());
+  assert.match(html, /<th>Confidence<\/th>/i);
+  assert.match(html, /<select id="filter-project">/);
+  assert.match(html, /<select id="filter-provider">/);
+  assert.match(html, /rowsWithoutUsage/, "the summary line must report rows with no usage data");
+  assert.match(html, /row\.confidence/, "a row's confidence must actually be rendered");
+});
+
 test("rejects a request whose Host header does not name this server (DNS rebinding)", async (t) => {
   const decisionsFile = tmpFile("decisions");
   const sessionsFile = tmpFile("sessions");

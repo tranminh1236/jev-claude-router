@@ -323,6 +323,7 @@ export async function startProxy({
                 decisionRow = {
                   kind: "decision", reqId: randomUUID(), ts: Date.now(), provider: "claude",
                   session, convo: key, from: current, to: tier, reason: fresh.reason,
+                  confidence: fresh.confidence,
                   contextTokens, policyVersion: 1, judgments: null,
                   probabilities: jev?.probabilities ?? null,
                 };

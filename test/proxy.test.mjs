@@ -78,6 +78,10 @@ test("logs a decision row with the reqId usage capture uses, when decisionLogFil
   assert.equal(row.provider, "claude");
   assert.ok(row.reqId);
   assert.equal(typeof row.to, "string");
+  // writeStatus(session, { tier, ...fresh, at }) puts confidence on the status line; the
+  // decision row dropped the same field, so the dashboard has no way to show how sure the
+  // router was about a given call.
+  assert.ok("confidence" in row, "decision row must carry confidence, like the status line does");
 
   // The decision row and the usage row captureUsage writes from the same request are two
   // separate appends - the dashboard only joins them correctly if they share one reqId.

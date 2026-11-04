@@ -78,28 +78,60 @@ const PAGE = `<!doctype html>
 <body>
 <h1>Jev Router</h1>
 <div id="summary"></div>
+<div>
+  Project: <select id="filter-project"><option value="">All</option></select>
+  Provider: <select id="filter-provider"><option value="">All</option></select>
+</div>
 <table id="decisions">
-  <thead><tr><th>Time</th><th>Provider</th><th>Project</th><th>From</th><th>To</th><th>Reason</th><th>Served</th></tr></thead>
+  <thead><tr><th>Time</th><th>Provider</th><th>Project</th><th>From</th><th>To</th><th>Confidence</th><th>Reason</th><th>Served</th></tr></thead>
   <tbody></tbody>
 </table>
 <script>
+let lastDecisions = [];
+
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function populateFilter(select, values) {
+  const current = select.value;
+  const unique = Array.from(new Set(values.filter((v) => v != null))).sort();
+  select.innerHTML = '<option value="">All</option>' +
+    unique.map((v) => '<option value="' + esc(v) + '">' + esc(v) + '</option>').join('');
+  if (unique.includes(current)) select.value = current;
+}
+
+function render() {
+  const projectFilter = document.querySelector('#filter-project').value;
+  const providerFilter = document.querySelector('#filter-provider').value;
+  const rows = lastDecisions.filter((row) =>
+    (!projectFilter || row.project === projectFilter) &&
+    (!providerFilter || row.provider === providerFilter)
+  );
+  const tbody = document.querySelector('#decisions tbody');
+  tbody.innerHTML = rows.map((row) =>
+    '<tr><td>' + esc(new Date(row.ts).toLocaleTimeString()) + '</td><td>' + esc(row.provider) +
+    '</td><td>' + esc(row.project) + '</td><td>' + esc(row.from) + '</td><td>' + esc(row.to) +
+    '</td><td>' + esc(row.confidence != null ? row.confidence.toFixed(2) : '') +
+    '</td><td>' + esc(row.reason) + '</td><td>' + esc(row.servedModel) + '</td></tr>'
+  ).join('');
+}
+
 async function refresh() {
   const [decisions, summary] = await Promise.all([
     fetch('/api/decisions').then((r) => r.json()),
     fetch('/api/summary').then((r) => r.json()),
   ]);
+  lastDecisions = decisions;
   document.querySelector('#summary').textContent =
-    'Saved $' + summary.savings.savedUsd.toFixed(4) + ' (' + summary.savings.rowsWithUsage + ' rows with usage)';
-  function esc(s) {
-    return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-  }
-  const tbody = document.querySelector('#decisions tbody');
-  tbody.innerHTML = decisions.map((row) =>
-    '<tr><td>' + esc(new Date(row.ts).toLocaleTimeString()) + '</td><td>' + esc(row.provider) +
-    '</td><td>' + esc(row.project) + '</td><td>' + esc(row.from) + '</td><td>' + esc(row.to) +
-    '</td><td>' + esc(row.reason) + '</td><td>' + esc(row.servedModel) + '</td></tr>'
-  ).join('');
+    'Saved $' + summary.savings.savedUsd.toFixed(4) + ' (' + summary.savings.rowsWithUsage + ' rows with usage, ' +
+    summary.savings.rowsWithoutUsage + ' without)';
+  populateFilter(document.querySelector('#filter-project'), decisions.map((row) => row.project));
+  populateFilter(document.querySelector('#filter-provider'), decisions.map((row) => row.provider));
+  render();
 }
+document.querySelector('#filter-project').addEventListener('change', render);
+document.querySelector('#filter-provider').addEventListener('change', render);
 refresh();
 setInterval(refresh, 5000);
 </script>
