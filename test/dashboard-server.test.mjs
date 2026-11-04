@@ -4,6 +4,7 @@ import { writeFileSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import http from "node:http";
 import {
   readDecisions,
   readSessionsMap,
@@ -39,6 +40,13 @@ test("readDecisions on a missing file returns an empty array", () => {
 test("readDecisions skips a malformed line without throwing", () => {
   const file = tmpFile("decisions");
   writeFileSync(file, "not json\n" + JSON.stringify({ kind: "decision", reqId: "r2", ts: 1, to: "sonnet" }) + "\n");
+  const rows = readDecisions(file);
+  assert.equal(rows.length, 1);
+});
+
+test("readDecisions skips a line that parses to a non-object without throwing", () => {
+  const file = tmpFile("decisions");
+  writeFileSync(file, "null\n" + "42\n" + JSON.stringify({ kind: "decision", reqId: "r4", ts: 1, to: "opus" }) + "\n");
   const rows = readDecisions(file);
   assert.equal(rows.length, 1);
 });
@@ -105,4 +113,24 @@ test("GET / returns an HTML page and an unknown path 404s", async (t) => {
 
   const missing = await fetch(`http://127.0.0.1:${port}/nope`);
   assert.equal(missing.status, 404);
+});
+
+test("rejects a request whose Host header does not name this server (DNS rebinding)", async (t) => {
+  const decisionsFile = tmpFile("decisions");
+  const sessionsFile = tmpFile("sessions");
+  writeFileSync(decisionsFile, "");
+  writeFileSync(sessionsFile, "{}");
+
+  const { port, close } = await createDashboardServer({ decisionsFile, sessionsFile });
+  t.after(() => close());
+
+  const status = await new Promise((resolve, reject) => {
+    const req = http.request(
+      { host: "127.0.0.1", port, path: "/api/summary", headers: { host: "evil.example:80" } },
+      (res) => resolve(res.statusCode),
+    );
+    req.on("error", reject);
+    req.end();
+  });
+  assert.ok(status === 403 || status === 421, `expected 403/421, got ${status}`);
 });

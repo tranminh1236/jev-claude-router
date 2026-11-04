@@ -27,6 +27,7 @@ export function readDecisions(decisionsFile, limit = 500) {
     } catch {
       continue;
     }
+    if (!row || typeof row !== "object") continue;
     if (row.kind === "decision") decisions.push(row);
     else if (row.kind === "usage") usageByReqId.set(row.reqId, row);
   }
@@ -119,31 +120,53 @@ export async function createDashboardServer({
     }));
   };
 
+  // A browser tab on an attacker-controlled page can be made to issue a request whose
+  // hostname later re-resolves to 127.0.0.1 (DNS rebinding), which same-origin policy does
+  // not stop at the DNS layer. The dashboard carries routing history, so a mismatched Host
+  // header - anything but this process's own loopback address and port - is refused outright.
+  const hostOk = (req) => {
+    const host = req.headers.host ?? "";
+    const [hostname, hostPort] = host.split(":");
+    const localPort = String(req.socket.localPort);
+    return (hostname === "127.0.0.1" || hostname === "localhost") && hostPort === localPort;
+  };
+
   const server = http.createServer((req, res) => {
-    const url = new URL(req.url, "http://localhost");
+    try {
+      if (!hostOk(req)) {
+        res.writeHead(421, { "content-type": "text/plain" });
+        res.end("misdirected request");
+        return;
+      }
 
-    if (url.pathname === "/") {
-      res.writeHead(200, { "content-type": "text/html" });
-      res.end(PAGE);
-      return;
+      const url = new URL(req.url, "http://localhost");
+
+      if (url.pathname === "/") {
+        res.writeHead(200, { "content-type": "text/html" });
+        res.end(PAGE);
+        return;
+      }
+
+      if (url.pathname === "/api/decisions") {
+        const limit = Number(url.searchParams.get("limit")) || 500;
+        res.writeHead(200, { "content-type": "application/json", "x-content-type-options": "nosniff" });
+        res.end(JSON.stringify(withProjects(limit)));
+        return;
+      }
+
+      if (url.pathname === "/api/summary") {
+        const rows = withProjects(20000);
+        res.writeHead(200, { "content-type": "application/json", "x-content-type-options": "nosniff" });
+        res.end(JSON.stringify(buildSummary(rows, { baselineModel })));
+        return;
+      }
+
+      res.writeHead(404, { "content-type": "text/plain" });
+      res.end("not found");
+    } catch (err) {
+      res.writeHead(500, { "content-type": "text/plain" });
+      res.end(`internal error: ${err.message}`);
     }
-
-    if (url.pathname === "/api/decisions") {
-      const limit = Number(url.searchParams.get("limit")) || 500;
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify(withProjects(limit)));
-      return;
-    }
-
-    if (url.pathname === "/api/summary") {
-      const rows = withProjects(20000);
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify(buildSummary(rows, { baselineModel })));
-      return;
-    }
-
-    res.writeHead(404, { "content-type": "text/plain" });
-    res.end("not found");
   });
 
   await new Promise((resolve) => server.listen(port, "127.0.0.1", resolve));
