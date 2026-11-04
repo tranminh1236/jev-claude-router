@@ -19,6 +19,7 @@
     "jev-grok": "bin/jev-grok.mjs",
     "jev-opencode": "bin/jev-opencode.mjs",
     "jev-daemon": "bin/jev-daemon.mjs",
+    "jev-dashboard": "bin/jev-dashboard.mjs",
     "jev-router": "bin/jev-router.mjs"
   },
   "scripts": {

@@ -214,3 +214,15 @@ test("jev-router dispatches daemon subcommands, honors JEV_DAEMON_PORT at call t
   assert.notEqual(bad.status, 0);
   assert.match(bad.stderr, /usage/i);
 });
+
+test("jev-router dashboard forwards to jev-dashboard.mjs, not jev-daemon.mjs", () => {
+  const home = isolatedHome();
+  const result = spawnSync(
+    process.execPath,
+    [join(BIN, "jev-router.mjs"), "dashboard", "--port", "0"],
+    { encoding: "utf8", timeout: 2000, env: { HOME: home, USERPROFILE: home, PATH: process.env.PATH ?? "" } },
+  );
+  // jev-dashboard.mjs never exits on its own (it's a server), so a 2s timeout is expected and
+  // the SIGTERM result is read; the assertion is on stdout, not the exit code.
+  assert.match(result.stdout, /\[jev-dashboard\] http:\/\/127\.0\.0\.1:/);
+});

@@ -6,8 +6,21 @@ import { fileURLToPath } from "node:url";
 // jev-daemon.mjs, so this always finds it regardless of where the installed binary is invoked
 // from.
 const DAEMON_BIN = fileURLToPath(new URL("./jev-daemon.mjs", import.meta.url));
+const DASHBOARD_BIN = fileURLToPath(new URL("./jev-dashboard.mjs", import.meta.url));
 
 const argv = process.argv.slice(2);
+
+// "dashboard" forwards whole to jev-dashboard.mjs, a separate long-running server binary, not
+// a jev-daemon.mjs subcommand - checked first so every other first token keeps going through
+// the "daemon" alias / forward-to-DAEMON_BIN logic below exactly as before.
+if (argv[0] === "dashboard") {
+  const result = spawnSync(process.execPath, [DASHBOARD_BIN, ...argv.slice(1)], { stdio: "inherit" });
+  if (result.error) {
+    process.stderr.write(`[jev-router] could not start jev-dashboard: ${result.error.message}\n`);
+    process.exit(1);
+  }
+  process.exit(result.signal ? 1 : (result.status ?? 1));
+}
 
 // "daemon" is a cosmetic alias: `jev-router daemon status` forwards to `jev-daemon.mjs status`
 // after stripping the leading token, and prints one line naming what it forwarded. Every other
