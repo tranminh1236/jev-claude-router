@@ -68,12 +68,22 @@ test("logs a decision row with the reqId usage capture uses, when decisionLogFil
   const file = join(tmpdir(), `decisions-${Date.now()}-${randomUUID()}.jsonl`);
   const { port, close } = await startProxy({ upstream: mockUpstreamUrl, decisionLogFile: file });
   await postRoutedTurn(port);
+  // captureUsage writes the usage row off the upstream response's own "end" event, which is
+  // not ordered against the client response's "end" that postTurn awaits - give it a moment.
+  await new Promise((r) => setTimeout(r, 20));
   await close();
-  const row = JSON.parse(readFileSync(file, "utf8").trim().split("\n")[0]);
+  const lines = readFileSync(file, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  const row = lines[0];
   assert.equal(row.kind, "decision");
   assert.equal(row.provider, "claude");
   assert.ok(row.reqId);
   assert.equal(typeof row.to, "string");
+
+  // The decision row and the usage row captureUsage writes from the same request are two
+  // separate appends - the dashboard only joins them correctly if they share one reqId.
+  const usageRow = lines.find((l) => l.kind === "usage");
+  assert.ok(usageRow, "captureUsage never wrote a usage row");
+  assert.equal(usageRow.reqId, row.reqId);
 });
 
 test("never logs a decision row for a sub-agent turn", async () => {
