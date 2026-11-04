@@ -8,7 +8,7 @@ import { decide } from "./policy.mjs";
 import { log, announceServedModel } from "./log.mjs";
 import { writeStatus } from "./status.mjs";
 import { createProxyState } from "./proxy-state.mjs";
-import { appendLine, trimDecisionLog } from "./decision-log.mjs";
+import { appendLine, maybeTrimDecisionLog } from "./decision-log.mjs";
 import { captureUsage } from "./usage.mjs";
 
 const UPSTREAM = "api.anthropic.com";
@@ -327,7 +327,7 @@ export async function startProxy({
                   probabilities: jev?.probabilities ?? null,
                 };
                 appendLine(decisionLogFile, decisionRow);
-                if (trimLog) trimDecisionLog(decisionLogFile);
+                if (trimLog) maybeTrimDecisionLog(decisionLogFile);
               }
             }
             if (subagent) state.markSubagent(key);

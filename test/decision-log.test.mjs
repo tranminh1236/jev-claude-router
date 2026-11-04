@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync, writeFileSync, existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { appendLine, trimDecisionLog } from "../src/decision-log.mjs";
+import { appendLine, trimDecisionLog, maybeTrimDecisionLog } from "../src/decision-log.mjs";
 
 const dir = mkdtempSync(join(tmpdir(), "jev-decision-log-"));
 const file = join(dir, "decisions.jsonl");
@@ -32,4 +32,21 @@ test("trimDecisionLog keeps exactly the last maxLines lines", () => {
 test("trimDecisionLog on a missing file is a no-op", () => {
   assert.doesNotThrow(() => trimDecisionLog(join(dir, "does-not-exist.jsonl"), 10));
   assert.equal(existsSync(join(dir, "does-not-exist.jsonl")), false);
+});
+
+/**
+ * The hot path calls this on every routed decision, and trimDecisionLog re-reads (and, when
+ * over the cap, rewrites) the whole file - cheap once, not thousands of times per session.
+ * maybeTrimDecisionLog only pays that cost every `every`th call; the calls between are free.
+ */
+test("maybeTrimDecisionLog only trims every Nth call, not every call", () => {
+  const throttleFile = join(dir, "throttle.jsonl");
+  writeFileSync(throttleFile, Array.from({ length: 10 }, (_, i) => JSON.stringify({ i })).join("\n") + "\n");
+  for (let i = 0; i < 4; i++) maybeTrimDecisionLog(throttleFile, { maxLines: 5, every: 5 });
+  let lines = readFileSync(throttleFile, "utf8").trim().split("\n");
+  assert.equal(lines.length, 10, "untrimmed before the 5th call");
+
+  maybeTrimDecisionLog(throttleFile, { maxLines: 5, every: 5 });
+  lines = readFileSync(throttleFile, "utf8").trim().split("\n");
+  assert.equal(lines.length, 5, "trimmed on the 5th call");
 });

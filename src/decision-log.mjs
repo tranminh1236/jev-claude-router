@@ -38,3 +38,23 @@ export function trimDecisionLog(file, maxLines = 20000) {
     // risk losing it.
   }
 }
+
+// Per-file call counters for maybeTrimDecisionLog, keyed by file path (a plain string - two
+// different paths never collide, and the same path across process restarts just resumes
+// counting from 0, which trimDecisionLog's own cap keeps safe either way).
+const trimCallCounts = new Map();
+
+/**
+ * trimDecisionLog re-reads the whole decision log on every call, and rewrites it when over the
+ * cap. The daemon calls it on every routed decision, which means re-reading a multi-megabyte
+ * file on every single turn for the common case where it does nothing. This only actually calls
+ * trimDecisionLog every `every`th time, bounding the log to approximately maxLines (overshooting
+ * by up to `every - 1` lines between trims) in exchange for paying the read/rewrite cost rarely
+ * instead of on the hot path of every request.
+ */
+export function maybeTrimDecisionLog(file, { maxLines = 20000, every = 500 } = {}) {
+  const count = (trimCallCounts.get(file) ?? 0) + 1;
+  trimCallCounts.set(file, count);
+  if (count % every !== 0) return;
+  trimDecisionLog(file, maxLines);
+}
