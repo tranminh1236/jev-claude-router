@@ -35,7 +35,12 @@ export function extractServedModel(text) {
   return match ? match[1] : null;
 }
 
-const MAX_BYTES = 65536;
+/**
+ * How much decoded text is carried between chunks. A usage object or a `"model":"..."` pair
+ * never spans more than a few hundred bytes, so this only has to be long enough that a field
+ * split across a chunk boundary is still whole in `carry + chunk`.
+ */
+const CARRY_BYTES = 4096;
 
 function decompressorFor(encoding) {
   switch (encoding) {
@@ -55,9 +60,17 @@ function decompressorFor(encoding) {
  * Taps a response stream to recover token usage and the served model, purely for the decision
  * log - it must never affect the real response. It pipes into its own PassThrough tee (never
  * pausing/resuming `stream` itself) and, when the upstream used a content-encoding, decompresses
- * that tee's copy independently of the untouched original. Decoded text is capped at the last
- * 65536 bytes seen. A decompression failure, or a stream with nothing usable in it, appends
- * nothing - a broken capture must stay invisible rather than write a misleading row.
+ * that tee's copy independently of the untouched original.
+ *
+ * Extraction runs per chunk, not once over a trailing window: Anthropic puts the served model
+ * and the input/cache counts in `message_start`, at the very front of the stream, and the final
+ * output-token count at the very end, so any reply long enough to push the two apart would
+ * otherwise lose the front half of its own bill. Only `CARRY_BYTES` of text is held at a time.
+ *
+ * A decompression failure, or a stream with nothing usable in it, appends nothing - a broken
+ * capture must stay invisible rather than write a misleading row. On failure the tee is also
+ * unpiped and drained: `stream` is the same readable the client's response is piped from, so an
+ * abandoned tee filling to its highWaterMark would backpressure the reply the user is reading.
  */
 export function captureUsage({ stream, reqId, file }) {
   try {
@@ -68,26 +81,34 @@ export function captureUsage({ stream, reqId, file }) {
     const decompressor = decompressorFor(encoding);
     const source = decompressor ? tee.pipe(decompressor) : tee;
 
-    let text = "";
+    const usage = {};
+    let servedModel = null;
+    let carry = "";
     let failed = false;
 
-    source.on("data", (chunk) => {
-      text = (text + chunk.toString("utf8")).slice(-MAX_BYTES);
-    });
-    source.on("error", () => {
+    const giveUp = () => {
+      if (failed) return;
       failed = true;
+      stream.unpipe(tee);
+      // Flowing mode with no 'data' listener discards whatever is already buffered, so the
+      // tee can never hold the shared readable back again.
+      tee.resume();
+    };
+
+    source.on("data", (chunk) => {
+      const text = carry + chunk.toString("utf8");
+      // Later values win per field (`message_delta` completes what `message_start` began);
+      // the model id is whatever named itself first.
+      Object.assign(usage, extractUsage(text));
+      if (servedModel === null) servedModel = extractServedModel(text);
+      carry = text.slice(-CARRY_BYTES);
     });
-    if (decompressor) {
-      decompressor.on("error", () => {
-        failed = true;
-      });
-    }
+    source.on("error", giveUp);
+    if (decompressor) decompressor.on("error", giveUp);
 
     source.on("end", () => {
       if (failed) return;
       try {
-        const usage = extractUsage(text);
-        const servedModel = extractServedModel(text);
         if (Object.keys(usage).length === 0 && servedModel === null) return;
         appendLine(file, { kind: "usage", reqId, ts: Date.now(), usage, servedModel });
       } catch {
