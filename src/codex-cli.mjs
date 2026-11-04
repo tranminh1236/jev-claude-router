@@ -3,6 +3,7 @@ import { which, missingMessage, shellSafe } from "./which.mjs";
 import { loadEnv, jevKey, ENV_FILE_HINT } from "./env.mjs";
 import { AUTO_MODEL } from "./config.mjs";
 import { startCodexProxy } from "./codex-proxy.mjs";
+import { statePaths } from "./daemon.mjs";
 
 const PROVIDER = "jev";
 
@@ -40,7 +41,7 @@ export async function runCodex() {
   let args = process.argv.slice(2);
   let close = () => {};
   if (jevKey()) {
-    const proxy = await startCodexProxy();
+    const proxy = await startCodexProxy({ decisionLogFile: statePaths().decisions });
     close = proxy.close;
     args = codexArgs(`http://127.0.0.1:${proxy.port}`, args);
   } else {

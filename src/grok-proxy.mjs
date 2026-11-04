@@ -1,12 +1,14 @@
 import http from "node:http";
 import https from "node:https";
 import { writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { brotliDecompressSync, gunzipSync, inflateSync, zstdDecompressSync } from "node:zlib";
 import { AUTO_MODEL, availableTiers, target } from "./config.mjs";
 import { askJev } from "./router.mjs";
 import { decide } from "./policy.mjs";
 import { conversationKey, isAgentSession, newTurnPrompt } from "./responses.mjs";
 import { log, announceServedModel } from "./log.mjs";
+import { appendLine } from "./decision-log.mjs";
 
 /**
  * Everything the Grok CLI does - the model list, a turn, session deltas, traces, the tool
@@ -95,6 +97,7 @@ const isResponsesPath = (path = "") => /\/responses(?:\?|$)/.test(path);
 export async function startGrokProxy({
   baseURL = process.env.JEV_GROK_UPSTREAM ?? GROK_BASE_URL,
   route = askJev,
+  decisionLogFile = null,
 } = {}) {
   const states = new Map();
   // Consecutive turns a downgrade has been refused, per conversation.
@@ -146,6 +149,14 @@ export async function startGrokProxy({
               tier = decision.tier;
               states.set(key, tier);
               streaks.set(key, decision.cheapStreak);
+              if (decisionLogFile) {
+                appendLine(decisionLogFile, {
+                  kind: "decision", reqId: randomUUID(), ts: Date.now(), provider: "grok",
+                  session: null, convo: key, from: current, to: tier, reason: decision.reason,
+                  contextTokens, policyVersion: 1, judgments: null,
+                  probabilities: jev?.probabilities ?? null, usage: null, servedModel: null,
+                });
+              }
               const spec = grokTierSpec(tier);
               const confidence = jev?.confidence == null ? "" : `, confidence ${jev.confidence.toFixed(2)}`;
               log(`grok ${key}: ${spec.model} effort=${spec.effort} (${decision.reason}${confidence})`);
