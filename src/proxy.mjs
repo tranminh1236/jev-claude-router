@@ -1,6 +1,6 @@
 import http from "node:http";
 import https from "node:https";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { writeFileSync, readFileSync } from "node:fs";
 import { idOf, availableTiers, tierSpec, isAuto } from "./config.mjs";
 import { askJev } from "./router.mjs";
@@ -8,6 +8,8 @@ import { decide } from "./policy.mjs";
 import { log, announceServedModel } from "./log.mjs";
 import { writeStatus } from "./status.mjs";
 import { createProxyState } from "./proxy-state.mjs";
+import { appendLine, trimDecisionLog } from "./decision-log.mjs";
+import { captureUsage } from "./usage.mjs";
 
 const UPSTREAM = "api.anthropic.com";
 const debug = (line) => process.env.JEV_DEBUG && log(line);
@@ -200,7 +202,12 @@ export function isSubagentSpawn({ session, key, routedSessions, convos, prompt, 
  * `upstream` exists for tests only and is deliberately not read from the environment: every
  * request carries the user's credentials, so where they go is not ordinary configuration.
  */
-export async function startProxy({ port = 0, upstream = `https://${UPSTREAM}` } = {}) {
+export async function startProxy({
+  port = 0,
+  upstream = `https://${UPSTREAM}`,
+  decisionLogFile = null,
+  trimDecisionLog: trimLog = false,
+} = {}) {
   // Conversations, routed sessions, sub-agent marks and manual overrides, all aged out by idle
   // time rather than by count - see src/proxy-state.mjs for the TTL/LRU rationale.
   const state = createProxyState();
@@ -227,6 +234,7 @@ export async function startProxy({ port = 0, upstream = `https://${UPSTREAM}` } 
     req.on("data", (c) => chunks.push(c));
     req.on("end", async () => {
       let out = Buffer.concat(chunks);
+      let decisionRow = null;
 
       if (/^\/v1\/messages/.test(req.url ?? "")) {
         try {
@@ -283,10 +291,12 @@ export async function startProxy({ port = 0, upstream = `https://${UPSTREAM}` } 
             // What the prompt cache was built on, which is what a downgrade would discard.
             const current = convo.tier ?? "sonnet";
             let fresh = null;
+            let contextTokens = null;
+            let jev = null;
             if (prompt) {
               const available = availableTiers();
-              const contextTokens = Math.round(JSON.stringify(body.messages).length / 4);
-              const jev = await askJev({ prompt, current, contextTokens, available });
+              contextTokens = Math.round(JSON.stringify(body.messages).length / 4);
+              jev = await askJev({ prompt, current, contextTokens, available });
               const { tier, reason, cheapStreak } = decide({
                 prompt, jev, current, available, contextTokens, cheapStreak: convo.cheapStreak ?? 0,
               });
@@ -309,6 +319,16 @@ export async function startProxy({ port = 0, upstream = `https://${UPSTREAM}` } 
             // sub-agent's tier is its own business and must not overwrite the main agent's.
             if (!subagent && !state.isSubagent(key)) {
               writeStatus(session, { tier, ...fresh, at: Date.now() });
+              if (decisionLogFile && fresh) {
+                decisionRow = {
+                  kind: "decision", reqId: randomUUID(), ts: Date.now(), provider: "claude",
+                  session, convo: key, from: current, to: tier, reason: fresh.reason,
+                  contextTokens, policyVersion: 1, judgments: null,
+                  probabilities: jev?.probabilities ?? null,
+                };
+                appendLine(decisionLogFile, decisionRow);
+                if (trimLog) trimDecisionLog(decisionLogFile);
+              }
             }
             if (subagent) state.markSubagent(key);
           }
@@ -328,6 +348,7 @@ export async function startProxy({ port = 0, upstream = `https://${UPSTREAM}` } 
         (up) => {
           res.writeHead(up.statusCode, up.headers);
           announceServedModel(up, "claude", up.statusCode);
+          if (decisionRow) captureUsage({ stream: up, reqId: decisionRow.reqId, file: decisionLogFile });
           up.pipe(res);
         },
       );

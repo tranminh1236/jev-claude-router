@@ -5,6 +5,7 @@ import { homedir, tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { startProxy } from "../src/proxy.mjs";
+import { statePaths } from "../src/daemon.mjs";
 import { readSavedModel, restoreSavedModel } from "../src/settings.mjs";
 import { autoModelEnv } from "../src/claude-settings.mjs";
 import { LOG_FILE } from "../src/log.mjs";
@@ -61,7 +62,7 @@ if (!claude) {
 }
 
 if (jevKey()) {
-  const { port, close } = await startProxy();
+  const { port, close } = await startProxy({ decisionLogFile: statePaths().decisions });
   env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${port}`;
   Object.assign(env, autoModelEnv());
   process.on("exit", () => {

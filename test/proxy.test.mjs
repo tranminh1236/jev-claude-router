@@ -1,6 +1,96 @@
-import test from "node:test";
+import test, { after } from "node:test";
 import assert from "node:assert/strict";
-import { sanitizeSchema, newTurnPrompt, applyTier, conversationKey, sessionOf } from "../src/proxy.mjs";
+import http from "node:http";
+import { randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { readFileSync, existsSync } from "node:fs";
+import { sanitizeSchema, newTurnPrompt, applyTier, conversationKey, sessionOf, startProxy } from "../src/proxy.mjs";
+
+// A stand-in for api.anthropic.com: answers every request with a small JSON body, just enough
+// for captureUsage to have something to read. What it returns is not under test here.
+const mockUpstream = http.createServer((req, res) => {
+  req.resume();
+  res.writeHead(200, { "content-type": "application/json" });
+  res.end(`{"model":"claude-sonnet-5","usage":{"input_tokens":5,"output_tokens":10}}`);
+});
+await new Promise((resolve) => mockUpstream.listen(0, "127.0.0.1", resolve));
+const mockUpstreamUrl = `http://127.0.0.1:${mockUpstream.address().port}`;
+after(() => mockUpstream.close());
+
+function postTurn(port, body) {
+  return new Promise((resolve) => {
+    const req = http.request(
+      { host: "127.0.0.1", port, method: "POST", path: "/v1/messages", agent: false },
+      (res) => {
+        res.on("data", () => {});
+        res.on("end", resolve);
+        res.on("error", resolve);
+      },
+    );
+    req.on("error", resolve);
+    req.end(JSON.stringify(body));
+  });
+}
+
+// One full, routable agent turn: the sentinel model, a tool so newTurnPrompt sees a real turn,
+// and a fresh session/conversation so it is never mistaken for a sub-agent.
+async function postRoutedTurn(port) {
+  const session = randomUUID();
+  await postTurn(port, {
+    model: "jev-auto",
+    tools: [{ name: "Bash" }],
+    messages: [{ role: "user", content: "please fix the failing test" }],
+    metadata: { user_id: JSON.stringify({ session_id: session }) },
+  });
+}
+
+// A sub-agent spawn: the parent turn first marks the session routed (an auxiliary call with no
+// tools, so it carries no prompt and is never logged itself), then a second request in the same
+// session opens a brand-new conversation naming a concrete model - exactly how Claude Code
+// starts a sub-agent - which `isSubagentSpawn` reads as one.
+async function postSubagentTurn(port) {
+  const session = randomUUID();
+  await postTurn(port, {
+    model: "jev-auto",
+    messages: [{ role: "user", content: "aux call, no tools" }],
+    metadata: { user_id: JSON.stringify({ session_id: session }) },
+  });
+  await postTurn(port, {
+    model: "claude-sonnet-4-6",
+    tools: [{ name: "Bash" }],
+    messages: [{ role: "user", content: "sub-agent task" }],
+    metadata: { user_id: JSON.stringify({ session_id: session }) },
+  });
+}
+
+test("logs a decision row with the reqId usage capture uses, when decisionLogFile is set", async () => {
+  const file = join(tmpdir(), `decisions-${Date.now()}-${randomUUID()}.jsonl`);
+  const { port, close } = await startProxy({ upstream: mockUpstreamUrl, decisionLogFile: file });
+  await postRoutedTurn(port);
+  await close();
+  const row = JSON.parse(readFileSync(file, "utf8").trim().split("\n")[0]);
+  assert.equal(row.kind, "decision");
+  assert.equal(row.provider, "claude");
+  assert.ok(row.reqId);
+  assert.equal(typeof row.to, "string");
+});
+
+test("never logs a decision row for a sub-agent turn", async () => {
+  const file = join(tmpdir(), `decisions-${Date.now()}-${randomUUID()}.jsonl`);
+  const { port, close } = await startProxy({ upstream: mockUpstreamUrl, decisionLogFile: file });
+  await postSubagentTurn(port);
+  await close();
+  assert.equal(existsSync(file), false);
+});
+
+test("decisionLogFile omitted logs nothing and changes no existing behavior", async () => {
+  const { port, close } = await startProxy({ upstream: mockUpstreamUrl });
+  await postRoutedTurn(port);
+  await close();
+  // no assertion beyond "did not throw" - this pins backward compatibility for every
+  // existing test in this file that calls startProxy() without the new options.
+});
 
 test("only the sentinel model is routed", () => {
   assert.equal(isAuto("jev-auto"), true);

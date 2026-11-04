@@ -148,7 +148,7 @@ async function runForeground({ port, paths }) {
   // land there because spawnDetached points them at it - either way, JEV_DEBUG's lines must end
   // up in one place, timestamped, or they are useless for lining up against a session.
   logTo(paths.log);
-  const proxy = await startProxy({ port });
+  const proxy = await startProxy({ port, decisionLogFile: paths.decisions, trimDecisionLog: true });
   writeFileSync(paths.pid, String(process.pid));
   writeFileSync(paths.port, String(port));
   log(`listening on 127.0.0.1:${port} (pid ${process.pid})`);
