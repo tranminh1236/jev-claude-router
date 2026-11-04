@@ -2,12 +2,18 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import os from "node:os";
+import { join } from "node:path";
 import { startProxy, MARKER_HEADER } from "../src/proxy.mjs";
-import { defaultPort, probe } from "../src/daemon.mjs";
+import { defaultPort, probe, statePaths } from "../src/daemon.mjs";
 
 const listen = (handler) => new Promise((done) => {
   const s = http.createServer(handler);
   s.listen(0, "127.0.0.1", () => done({ port: s.address().port, close: () => s.close() }));
+});
+
+test("statePaths includes decisions.jsonl under the state dir", () => {
+  const paths = statePaths("/home/x");
+  assert.equal(paths.decisions, join("/home/x", ".jev-router", "decisions.jsonl"));
 });
 
 test("defaultPort reads JEV_DAEMON_PORT fresh on each call, not at import time", () => {

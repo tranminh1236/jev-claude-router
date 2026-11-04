@@ -49,6 +49,7 @@ export function statePaths(home = homedir()) {
     port: join(dir, "daemon.port"),
     log: join(dir, "daemon.log"),
     install: join(dir, "install.json"),
+    decisions: join(dir, "decisions.jsonl"),
   };
 }
 
