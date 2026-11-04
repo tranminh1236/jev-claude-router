@@ -5,6 +5,7 @@ import { AUTO_MODEL } from "./config.mjs";
 import { startGrokProxy, GROK_BASE_URL, safeGrokUpstream } from "./grok-proxy.mjs";
 import { cleanModelsCache, cleanSavedModel, registerSentinel, unregisterSentinel } from "./grok-cache.mjs";
 import { LOG_FILE, log } from "./log.mjs";
+import { statePaths } from "./daemon.mjs";
 
 
 export const resolveGrok = () => which("grok");
@@ -39,7 +40,7 @@ export async function runGrok() {
   let close = () => {};
   if (jevKey()) {
     const upstream = grokUpstream();
-    const proxy = await startGrokProxy({ baseURL: upstream });
+    const proxy = await startGrokProxy({ baseURL: upstream, decisionLogFile: statePaths().decisions });
     // The sentinel has to exist in Grok's config before the CLI starts, because Grok resolves
     // the model id against its own catalogue rather than passing an unknown one through.
     const { changed } = registerSentinel();

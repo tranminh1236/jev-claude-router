@@ -41,3 +41,15 @@ test("leaves a real model the user chose during the session alone", () => {
 test("a missing or unreadable settings file is not an error", () => {
   assert.equal(restoreSavedModel("opus", join(tmpdir(), "nope", "settings.json")), false);
 });
+
+test("a saved sentinel is kept when the daemon is installed", () => {
+  const file = fileWith({ model: "jev-auto", env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:61820" } });
+  assert.equal(restoreSavedModel("opus", file), false);
+  assert.equal(modelIn(file), "jev-auto", "the extension user's own choice survives a CLI session");
+});
+
+test("a saved sentinel is still cleaned up when nothing can resolve it", () => {
+  const file = fileWith({ model: "jev-auto", env: { ANTHROPIC_BASE_URL: "https://api.example.com" } });
+  assert.equal(restoreSavedModel("opus", file), true);
+  assert.equal(modelIn(file), "opus");
+});

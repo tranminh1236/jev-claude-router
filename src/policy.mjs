@@ -63,7 +63,7 @@ function clampToAvailable(tier, available) {
  *
  * @param {object} input
  * @param {string} input.prompt        raw user prompt, for explicit-override detection
- * @param {?{choice: string, confidence: number}} input.jev  null when Jev failed
+ * @param {?{choice: string, confidence?: number, probabilities?: object}} input.jev  null when Jev failed
  * @param {string} input.current       tier currently active in the session
  * @param {string[]} input.available   tier names the account can run
  * @param {number} input.contextTokens approximate size of the conversation so far
@@ -93,7 +93,12 @@ export function decide({ prompt, jev, current, available, contextTokens = 0, che
 
   let target = jev.choice;
 
-  if (jev.confidence < THRESHOLDS.minConfidence) {
+  // probabilities[choice] — the top answer's own odds of being right — is what gates the
+  // decision; confidence (how concentrated the whole distribution is) only stands in when
+  // no distribution came back.
+  const topProbability = jev.probabilities?.[jev.choice] ?? jev.confidence;
+
+  if (topProbability < THRESHOLDS.minTopProbability) {
     // An uncertain answer is not evidence the session has gone quiet, but it is not evidence
     // of hard work either, so it neither builds the streak nor breaks it.
     if (rankOf(target) < rankOf(current)) return settle(current, "low-confidence-no-downgrade", cheapStreak);

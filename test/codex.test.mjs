@@ -1,6 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
+import { readFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   addJevModel,
   applyCodexTier,
@@ -198,4 +202,42 @@ test("proxy preserves Codex auth, picker, routing, and native decision output", 
   assert.equal(seen[1].body.model, "gpt-5.6-sol");
   assert(response.indexOf("response.created") < response.indexOf("[Jev] routed this turn"));
   assert(response.indexOf("[Jev] routed this turn") < response.indexOf("response.completed"));
+});
+
+test("logs a decision row for a routed agent turn", async (t) => {
+  const file = join(tmpdir(), `codex-decisions-${Date.now()}-${randomUUID()}.jsonl`);
+  const upstream = http.createServer((req, res) => {
+    req.resume();
+    res.end('event: response.completed\ndata: {"type":"response.completed"}\n\n');
+  });
+  await new Promise((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+  t.after(() => upstream.close());
+  const upstreamURL = `http://127.0.0.1:${upstream.address().port}`;
+  const { port, close } = await startCodexProxy({
+    chatgptBaseURL: `${upstreamURL}/backend-api/codex`,
+    apiBaseURL: `${upstreamURL}/v1`,
+    route: async () => ({ choice: "opus", confidence: 0.91 }),
+    decisionLogFile: file,
+  });
+  t.after(close);
+
+  await fetch(`http://127.0.0.1:${port}/responses`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      model: "jev-auto",
+      prompt_cache_key: "thread-2",
+      client_metadata: { thread_id: "thread-2" },
+      input: [
+        { type: "additional_tools", role: "developer", tools: [{}] },
+        { role: "user", content: [{ type: "input_text", text: "fix the race" }] },
+      ],
+    }),
+  }).then((r) => r.text());
+
+  const row = JSON.parse(readFileSync(file, "utf8").trim());
+  assert.equal(row.kind, "decision");
+  assert.equal(row.provider, "codex");
+  assert.equal(row.usage, null);
+  assert.equal(row.servedModel, null);
 });

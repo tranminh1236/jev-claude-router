@@ -43,6 +43,55 @@ npm install
 npm link
 ```
 
+## Running the daemon for the VS Code extension
+
+The launchers above each start their own proxy and stop it when the CLI exits. The Claude Code
+VS Code extension does not go through a launcher at all — it starts `claude` directly — so
+there is nothing to wrap. The daemon is the alternative: a single long-running proxy, installed
+once, that both the extension and a plain `claude` invocation route through alike, because
+Claude Code applies `settings.json`'s `env` block on every launch regardless of which surface
+started the session.
+
+```bash
+jev-daemon install
+```
+
+This does three things: starts the daemon under `launchd` so it survives logins and restarts
+it if it dies; adds a `preflight` `SessionStart` hook; and sets `ANTHROPIC_BASE_URL` plus the
+same `ANTHROPIC_MODEL`/`ANTHROPIC_CUSTOM_MODEL_OPTION*`/`CLAUDE_CODE_MAX_CONTEXT_TOKENS` keys a
+launcher sets for one session, but in `~/.claude/settings.json` itself, so they apply to every
+session from then on. It never overwrites a key you already set — anything already in `env` is
+left alone and reported as skipped, and an existing `statusLine` is never touched.
+
+The key itself does not go into `settings.json`, or anywhere the hook's own invocation can read
+it from the shell. `launchd` hands the job a near-empty environment with no inherited shell
+variables, so `JEV_API_KEY` and every `JEV_<SUPPLIER>_<TIER>_*` override must live in
+`~/.jev-router.env` — the same file the launchers already read — for the daemon to see them at
+all.
+
+If the daemon has died — most commonly right after a reboot, before launchd's own keep-alive
+has restarted it — the `preflight` hook notices on the next session's `SessionStart` and
+silently revives it before that session's first request goes out. Only if it cannot be
+revived (its port taken by something else, for instance) does it do anything visible: it
+reverses the settings patch and lets you know routing is off, rather than leaving every request
+in that session pointed at a dead proxy.
+
+Once the agent is installed, `jev-daemon start` and the hook's revive both go through launchd,
+so the daemon that ends up running is always the supervised one. `jev-daemon stop` and
+`jev-daemon restart` never cut a reply mid-stream: the daemon stops taking new connections at
+once and lets every reply already streaming finish, for up to 90 seconds, before it exits.
+Requests sent in that window are refused, and Claude Code retries them against the daemon that
+comes back. The daemon logs to `~/.jev-router/daemon.log`, timestamped — `JEV_DEBUG=1` in
+`~/.jev-router.env` adds every routing decision there. An agent installed before this behavior
+existed is killed by launchd 20 seconds into that drain; re-run `jev-daemon install` to lift it.
+
+```bash
+jev-daemon uninstall
+```
+
+reverses exactly what `install` did: unloads and removes the launchd job, then removes exactly
+the `settings.json` keys and hook entry `install` added — never a key you had set yourself.
+
 ## How your credentials are handled
 
 Each launcher starts a proxy on `127.0.0.1` on a random port and points the CLI at it for the
@@ -201,12 +250,13 @@ main conversation.
 | --- | --- |
 | `JEV_API_KEY` | Required for routing. `TYPESAFE_API_KEY` also works. |
 | `JEV_NO_STATUSLINE` | Set to `1` to stop injecting the status line. |
-| `JEV_DEBUG` | Logs every decision and rewrite. Interactive sessions write to `~/.jev-claude.log`, since stderr would corrupt Claude Code's UI; `-p` mode writes to stderr. |
+| `JEV_DEBUG` | Logs every decision and rewrite. Interactive sessions write to `~/.jev-claude.log`, since stderr would corrupt Claude Code's UI; `-p` mode writes to stderr; the daemon writes to `~/.jev-router/daemon.log`. |
 | `JEV_DUMP` | Path prefix for dumping request bodies, for debugging wire-format changes. |
 | `JEV_<SUPPLIER>_<TIER>_MODEL` | Override one tier's model. Supplier is `CLAUDE`, `CODEX` or `GROK`; tier is `FAST`, `BALANCED`, `STRONG` or `LONG`. |
 | `JEV_<SUPPLIER>_<TIER>_EFFORT` | Override one tier's reasoning effort, same naming. |
 | `JEV_DISABLE_TIERS` | Comma-separated tier names to take out of play, e.g. `JEV_DISABLE_TIERS=fable`. All four are on by default. |
 | `JEV_GROK_UPSTREAM` | HTTPS chat proxy the Grok router forwards to. Defaults to an existing `GROK_CLI_CHAT_PROXY_BASE_URL`, then to xAI's. Plain HTTP is accepted only on literal loopback addresses. |
+| `JEV_DAEMON_PORT` | Overrides the daemon's fixed port (default `61820`). Must match between `jev-daemon install` and anything that probes the daemon, including the `preflight` hook. |
 
 All four launchers read the real environment first, then fill missing values from
 `~/.jev-router.env` and the legacy `~/.jev-claude.env`. A project-local `.env` is deliberately

@@ -9,11 +9,21 @@ export const LOG_FILE = join(homedir(), ".jev-claude.log");
 // In print mode (`-p`) there is no TUI to damage, so stderr stays convenient for piping.
 const interactive = process.stdout.isTTY;
 
+// The daemon has no terminal and serves many sessions at once, so its lines go to one file of
+// its own, timestamped - lining them up against a session's transcript is the whole point.
+let destination = null;
+
+/** Sends every later line to `file`, timestamped, whatever stdout is attached to. */
+export function logTo(file) {
+  destination = file;
+}
+
 export function log(line) {
   const text = `[jev] ${line}\n`;
-  if (!interactive) return void process.stderr.write(text);
+  const file = destination ?? (interactive ? LOG_FILE : null);
+  if (!file) return void process.stderr.write(text);
   try {
-    appendFileSync(LOG_FILE, `${new Date().toISOString()} ${text}`);
+    appendFileSync(file, `${new Date().toISOString()} ${text}`);
   } catch {
     // A broken log file must never take down the session.
   }
