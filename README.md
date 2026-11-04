@@ -76,6 +76,15 @@ revived (its port taken by something else, for instance) does it do anything vis
 reverses the settings patch and lets you know routing is off, rather than leaving every request
 in that session pointed at a dead proxy.
 
+Once the agent is installed, `jev-daemon start` and the hook's revive both go through launchd,
+so the daemon that ends up running is always the supervised one. `jev-daemon stop` and
+`jev-daemon restart` never cut a reply mid-stream: the daemon stops taking new connections at
+once and lets every reply already streaming finish, for up to 90 seconds, before it exits.
+Requests sent in that window are refused, and Claude Code retries them against the daemon that
+comes back. The daemon logs to `~/.jev-router/daemon.log`, timestamped — `JEV_DEBUG=1` in
+`~/.jev-router.env` adds every routing decision there. An agent installed before this behavior
+existed is killed by launchd 20 seconds into that drain; re-run `jev-daemon install` to lift it.
+
 ```bash
 jev-daemon uninstall
 ```
@@ -241,7 +250,7 @@ main conversation.
 | --- | --- |
 | `JEV_API_KEY` | Required for routing. `TYPESAFE_API_KEY` also works. |
 | `JEV_NO_STATUSLINE` | Set to `1` to stop injecting the status line. |
-| `JEV_DEBUG` | Logs every decision and rewrite. Interactive sessions write to `~/.jev-claude.log`, since stderr would corrupt Claude Code's UI; `-p` mode writes to stderr. |
+| `JEV_DEBUG` | Logs every decision and rewrite. Interactive sessions write to `~/.jev-claude.log`, since stderr would corrupt Claude Code's UI; `-p` mode writes to stderr; the daemon writes to `~/.jev-router/daemon.log`. |
 | `JEV_DUMP` | Path prefix for dumping request bodies, for debugging wire-format changes. |
 | `JEV_<SUPPLIER>_<TIER>_MODEL` | Override one tier's model. Supplier is `CLAUDE`, `CODEX` or `GROK`; tier is `FAST`, `BALANCED`, `STRONG` or `LONG`. |
 | `JEV_<SUPPLIER>_<TIER>_EFFORT` | Override one tier's reasoning effort, same naming. |

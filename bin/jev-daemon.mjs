@@ -2,7 +2,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadEnv } from "../src/env.mjs";
-import { defaultPort, startDaemon, stopDaemon, daemonStatus, statePaths } from "../src/daemon.mjs";
+import { DRAIN_MS, defaultPort, startDaemon, stopDaemon, restartDaemon, daemonStatus, statePaths } from "../src/daemon.mjs";
 import { installAgent, uninstallAgent, verifyAgent } from "../src/launchd.mjs";
 import { preflight } from "../src/preflight.mjs";
 import { USER_SETTINGS } from "../src/settings.mjs";
@@ -24,13 +24,13 @@ const port = Number(flagValue("--port", defaultPort()));
 
 async function cmdStart() {
   try {
-    const { port: boundPort, pid, already } = await startDaemon({ port, foreground });
+    const { port: boundPort, pid, already, via } = await startDaemon({ port, foreground });
     // In --foreground mode startDaemon never returns (see src/daemon.mjs) - it is the process
     // being supervised, so this line only runs for the detached path a human invokes directly.
     process.stderr.write(
       already
         ? `[jev-daemon] already running on port ${boundPort} (pid ${pid})\n`
-        : `[jev-daemon] started on port ${boundPort} (pid ${pid})\n`,
+        : `[jev-daemon] started on port ${boundPort} (pid ${pid}, via ${via})\n`,
     );
     return true;
   } catch (err) {
@@ -47,6 +47,9 @@ async function cmdStop() {
   }
   if (stopped) {
     process.stderr.write(`[jev-daemon] stopped (${via})\n`);
+    process.stderr.write(
+      `[jev-daemon] replies already streaming finish first, for up to ${DRAIN_MS / 1000}s\n`,
+    );
     // The proxy's base URL in settings.json never changes just because the daemon stopped -
     // any session opened before this still points at the now-dead port until it is restarted.
     process.stderr.write(`[jev-daemon] sessions already open still point at this port until you restart them\n`);
@@ -54,6 +57,17 @@ async function cmdStop() {
   }
   process.stderr.write(`[jev-daemon] could not stop it (${via}); see daemon.log\n`);
   return false;
+}
+
+async function cmdRestart() {
+  try {
+    const { port: boundPort, pid, via } = await restartDaemon({ port });
+    process.stderr.write(`[jev-daemon] restarted on port ${boundPort} (pid ${pid}, via ${via})\n`);
+    return true;
+  } catch (err) {
+    process.stderr.write(`[jev-daemon] ${err.message}\n`);
+    return false;
+  }
 }
 
 async function cmdStatus() {
@@ -150,10 +164,7 @@ switch (command) {
     ok = await cmdStop();
     break;
   case "restart":
-    // Stopping first even when nothing is running is fine - cmdStop treats that as success,
-    // not a reason to refuse the restart.
-    await cmdStop();
-    ok = await cmdStart();
+    ok = await cmdRestart();
     break;
   case "status":
     ok = await cmdStatus();

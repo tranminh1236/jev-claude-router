@@ -196,12 +196,28 @@ export function isSubagentSpawn({ session, key, routedSessions, convos, prompt, 
   return Boolean(prompt) && routedSessions.has(session) && !convos.has(key) && !manual.has(key);
 }
 
-export async function startProxy({ port = 0 } = {}) {
+/**
+ * `upstream` exists for tests only and is deliberately not read from the environment: every
+ * request carries the user's credentials, so where they go is not ordinary configuration.
+ */
+export async function startProxy({ port = 0, upstream = `https://${UPSTREAM}` } = {}) {
   // Conversations, routed sessions, sub-agent marks and manual overrides, all aged out by idle
   // time rather than by count - see src/proxy-state.mjs for the TTL/LRU rationale.
   const state = createProxyState();
+  const target = new URL(upstream);
+  const transport = target.protocol === "http:" ? http : https;
+
+  // Requests whose reply has not finished yet, so a stop can wait for them instead of cutting
+  // every session's stream at once: one daemon serves every window of every project.
+  let inFlight = 0;
+  let onIdle = null;
 
   const server = http.createServer((req, res) => {
+    inFlight += 1;
+    res.on("close", () => {
+      inFlight -= 1;
+      if (inFlight === 0) onIdle?.();
+    });
     // Claude Code probes the base URL before its first request. The marker header rides along
     // on the same 200, so a daemon's `probe()` can tell this process apart from anything else
     // that happens to be listening on its fixed port.
@@ -302,29 +318,57 @@ export async function startProxy({ port = 0 } = {}) {
         }
       }
 
-      const headers = { ...req.headers, host: UPSTREAM };
+      const headers = { ...req.headers, host: target.host };
       delete headers["content-length"];
       // Under JEV_DEBUG, ask for an uncompressed stream so the model the API reports can be
       // read back out of it. Not worth the bandwidth cost in normal operation.
       if (process.env.JEV_DEBUG) delete headers["accept-encoding"];
-      const upstream = https.request(
-        { hostname: UPSTREAM, path: req.url, method: req.method, headers },
+      const forwarded = transport.request(
+        { hostname: target.hostname, port: target.port || undefined, path: req.url, method: req.method, headers },
         (up) => {
           res.writeHead(up.statusCode, up.headers);
           announceServedModel(up, "claude", up.statusCode);
           up.pipe(res);
         },
       );
-      upstream.on("error", (e) => {
+      forwarded.on("error", (e) => {
         debug(`upstream error: ${e.message}`);
         if (!res.headersSent) res.writeHead(502, { "content-type": "application/json" });
         res.end(JSON.stringify({ type: "error", error: { message: e.message } }));
       });
-      if (out.length) upstream.write(out);
-      upstream.end();
+      if (out.length) forwarded.write(out);
+      forwarded.end();
     });
   });
 
   await new Promise((resolve) => server.listen(port, "127.0.0.1", resolve));
-  return { port: server.address().port, close: () => server.close() };
+  return {
+    port: server.address().port,
+    close: () => server.close(),
+    /**
+     * Stops taking connections at once - the port reads as dead, so clients retry against
+     * whatever replaces this process - and resolves once every reply already streaming has
+     * finished, or `timeoutMs` passes and the rest are cut. `cut` counts those.
+     */
+    shutdown({ timeoutMs }) {
+      server.close();
+      return new Promise((resolve) => {
+        const done = (cut) => {
+          server.closeIdleConnections();
+          resolve({ cut });
+        };
+        if (inFlight === 0) return done(0);
+        const timer = setTimeout(() => {
+          const cut = inFlight;
+          onIdle = null;
+          server.closeAllConnections();
+          done(cut);
+        }, timeoutMs);
+        onIdle = () => {
+          clearTimeout(timer);
+          done(0);
+        };
+      });
+    },
+  };
 }

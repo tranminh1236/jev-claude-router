@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { patchSettings, unpatchSettings, writeAtomic } from "./claude-settings.mjs";
-import { probe, statePaths } from "./daemon.mjs";
+import { DRAIN_MS, probe, statePaths } from "./daemon.mjs";
 import { ENV_FILE_HINT, jevKey, loadEnv } from "./env.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -61,6 +61,10 @@ export function plistFor({ node, script, port, log }) {
     `    <true/>`,
     `    <key>KeepAlive</key>`,
     `    <true/>`,
+    // launchd SIGKILLs a job this many seconds after SIGTERM (20 when unset), which would cut
+    // the streams the daemon's drain is waiting on; measured 2026-11-04 with a test agent.
+    `    <key>ExitTimeOut</key>`,
+    `    <integer>${Math.ceil(DRAIN_MS / 1000) + 10}</integer>`,
     `    <key>StandardOutPath</key>`,
     `    <string>${escapeXml(log)}</string>`,
     `    <key>StandardErrorPath</key>`,
@@ -94,10 +98,12 @@ function run(cmd, args) {
   });
 }
 
+export const runLaunchctl = (args) => run("launchctl", args);
+
 const isMacOS = () => process.platform === "darwin";
 // Per-user agents live in the gui/<uid> domain from 10.11 on - the only target bootstrap/bootout
 // accept for anything under ~/Library/LaunchAgents.
-const guiDomain = () => `gui/${typeof process.getuid === "function" ? process.getuid() : 0}`;
+export const guiDomain = () => `gui/${typeof process.getuid === "function" ? process.getuid() : 0}`;
 
 /**
  * Refuses up front, before anything is written, rather than discovering mid-install that

@@ -1,11 +1,24 @@
 import http from "node:http";
-import { execFile, spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { LABEL, launchdLoaded, plistPath } from "./launchd.mjs";
+import { LABEL, guiDomain, launchdLoaded, plistPath, runLaunchctl } from "./launchd.mjs";
+import { log, logTo } from "./log.mjs";
 import { MARKER_HEADER, startProxy } from "./proxy.mjs";
+
+/**
+ * How long a stopping daemon lets replies already streaming finish before it exits. It serves
+ * every session on the machine, so exiting at once cut all of their streams mid-reply. While it
+ * drains the port reads as dead and Claude Code retries - ten attempts over about three minutes,
+ * measured 2026-11-04 - so this stays well inside that: a restart costs a pause, not a reply.
+ */
+export const DRAIN_MS = 90_000;
+
+// launchd refuses to bootstrap a job ("5: Input/output error") until that job's previous process
+// has exited, which a drain can hold off. Bounded, because the SessionStart hook waits on this.
+const BOOTSTRAP_WAIT_MS = 10_000;
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 // Resolved once, relative to this file rather than process.cwd(), because a detached re-spawn
@@ -67,17 +80,23 @@ const readPortFile = (file) => {
  * that module doesn't export either and duplicating this one call is cheaper than widening its
  * exported surface for a single caller.
  */
-function stopViaLaunchctl(home = homedir()) {
-  return new Promise((resolve, reject) => {
-    const uid = typeof process.getuid === "function" ? process.getuid() : 0;
-    execFile("launchctl", ["bootout", `gui/${uid}/${LABEL}`], (err) => {
-      if (!err) return resolve();
-      execFile("launchctl", ["unload", "-w", plistPath(home)], (err2) => {
-        if (err2) reject(err2);
-        else resolve();
-      });
-    });
-  });
+async function stopViaLaunchctl(home = homedir()) {
+  try {
+    await runLaunchctl(["bootout", `${guiDomain()}/${LABEL}`]);
+  } catch {
+    await runLaunchctl(["unload", "-w", plistPath(home)]);
+  }
+}
+
+/** Probes until `done(state)` holds or `ms` runs out, and returns the last state seen. */
+async function probeUntil(port, done, ms) {
+  const deadline = Date.now() + ms;
+  let state = await probe(port);
+  while (!done(state) && Date.now() < deadline) {
+    await sleep(100);
+    state = await probe(port);
+  }
+  return state;
 }
 
 const cleanupFiles = (paths) => {
@@ -124,12 +143,24 @@ export function probe(port, { timeout = 500 } = {}) {
  */
 async function runForeground({ port, paths }) {
   mkdirSync(paths.dir, { recursive: true });
+  // Under launchd stdout/stderr already land in daemon.log, but a hand-started daemon's only
+  // land there because spawnDetached points them at it - either way, JEV_DEBUG's lines must end
+  // up in one place, timestamped, or they are useless for lining up against a session.
+  logTo(paths.log);
   const proxy = await startProxy({ port });
   writeFileSync(paths.pid, String(process.pid));
   writeFileSync(paths.port, String(port));
+  log(`listening on 127.0.0.1:${port} (pid ${process.pid})`);
 
-  const shutdown = () => {
-    proxy.close();
+  let stopping = false;
+  const shutdown = async () => {
+    // A second signal means now: a person pressing Ctrl-C twice, or someone who has decided
+    // the replies still streaming are not worth waiting for.
+    if (stopping) process.exit(0);
+    stopping = true;
+    log(`stopping; letting replies in flight finish (up to ${DRAIN_MS / 1000}s)`);
+    const { cut } = await proxy.shutdown({ timeoutMs: DRAIN_MS });
+    log(cut ? `stopped, cutting ${cut} reply(s) still streaming` : "stopped");
     // Explicit 0: launchd's KeepAlive and a plain `kill` both read a nonzero exit as a crash
     // worth respawning, which a deliberate stop is not.
     process.exit(0);
@@ -142,29 +173,54 @@ async function runForeground({ port, paths }) {
 
 async function spawnDetached({ port, paths }) {
   mkdirSync(paths.dir, { recursive: true });
-  const child = spawn(
-    process.execPath,
-    [DAEMON_BIN, "start", "--foreground", "--port", String(port)],
-    // stdio: "ignore" plus detached+unref so this process's exit (or the parent shell's) can
-    // never take the daemon down with it. Nothing here is lost: once Task 5's launchd agent
-    // takes over, its own plist captures stdout/stderr into daemon.log.
-    { detached: true, stdio: "ignore" },
-  );
+  // detached+unref so this process's exit (or the parent shell's) can never take the daemon
+  // down with it. Its output goes to daemon.log rather than nowhere: a daemon that dies before
+  // its own logging is up - say, a port it cannot bind - would otherwise leave no trace at all.
+  const out = openSync(paths.log, "a");
+  let child;
+  try {
+    child = spawn(
+      process.execPath,
+      [DAEMON_BIN, "start", "--foreground", "--port", String(port)],
+      { detached: true, stdio: ["ignore", out, out] },
+    );
+  } finally {
+    closeSync(out);
+  }
   child.unref();
 
   // A few seconds, not indefinite: a daemon that cannot bind its own fixed port (permissions,
   // a race with another `start`) should surface as a failure, not hang the caller.
-  const deadline = Date.now() + 5000;
-  let state = "dead";
-  while (Date.now() < deadline) {
-    state = await probe(port);
-    if (state === "ours") break;
-    await sleep(100);
-  }
-  if (state !== "ours") {
+  if ((await probeUntil(port, (s) => s === "ours", 5000)) !== "ours") {
     throw new Error(`daemon did not come up on port ${port} within 5s; check ${paths.log}`);
   }
-  return { port, pid: readPidFile(paths.pid), already: false };
+  return { port, pid: readPidFile(paths.pid), already: false, via: "detached" };
+}
+
+/**
+ * Once the agent is installed, a daemon started any other way is one nothing restarts when it
+ * dies - and the agent's own job, finding the port taken, can only wait behind it. So `start`
+ * (and the SessionStart hook's revive, which calls it) hands the job to launchd instead.
+ */
+async function startViaLaunchd({ port, paths }) {
+  if (await launchdLoaded()) {
+    await runLaunchctl(["kickstart", `${guiDomain()}/${LABEL}`]);
+  } else {
+    const deadline = Date.now() + BOOTSTRAP_WAIT_MS;
+    for (;;) {
+      try {
+        await runLaunchctl(["bootstrap", guiDomain(), plistPath()]);
+        break;
+      } catch (err) {
+        if (Date.now() >= deadline) throw err;
+        await sleep(250);
+      }
+    }
+  }
+  if ((await probeUntil(port, (s) => s === "ours", 5000)) !== "ours") {
+    throw new Error(`the agent did not come up on port ${port} within 5s; check ${paths.log}`);
+  }
+  return { port, pid: readPidFile(paths.pid), already: false, via: "launchd" };
 }
 
 /**
@@ -175,7 +231,20 @@ async function spawnDetached({ port, paths }) {
  */
 export async function startDaemon({ port = defaultPort(), foreground = false } = {}) {
   const paths = statePaths();
-  const state = await probe(port);
+  let state = await probe(port);
+  if (state === "ours" && foreground) {
+    // This is launchd's job, and another daemon of ours already has the port - one started by
+    // hand before the agent was loaded. Exiting would have launchd restart this every ten
+    // seconds for as long as that one lives, a respawn loop filling daemon.log while nothing
+    // supervises the port. Waiting means the job takes over the moment the other one stops.
+    mkdirSync(paths.dir, { recursive: true });
+    logTo(paths.log);
+    log(`port ${port} is served by pid ${readPidFile(paths.pid)}; waiting to take over when it stops`);
+    while (state === "ours") {
+      await sleep(1000);
+      state = await probe(port);
+    }
+  }
   if (state === "ours") {
     return { port, pid: readPidFile(paths.pid), already: true };
   }
@@ -185,7 +254,16 @@ export async function startDaemon({ port = defaultPort(), foreground = false } =
         `Set JEV_DAEMON_PORT to a free port, or stop whatever else is listening on ${port}.`,
     );
   }
-  return foreground ? runForeground({ port, paths }) : spawnDetached({ port, paths });
+  if (foreground) return runForeground({ port, paths });
+  if (existsSync(plistPath())) {
+    try {
+      return await startViaLaunchd({ port, paths });
+    } catch (err) {
+      // A broken agent (a node binary that moved, say) is no reason to leave the port dead.
+      log(`launchd could not start the agent (${err.message}); starting it unsupervised`);
+    }
+  }
+  return spawnDetached({ port, paths });
 }
 
 /**
@@ -214,22 +292,21 @@ export async function stopDaemon() {
     return { stopped: true, via: "none" };
   }
 
-  const underLaunchd = await launchdLoaded();
   let via = "signal";
-  if (underLaunchd) {
+  if (await launchdLoaded()) {
     try {
       await stopViaLaunchctl();
       via = "launchd";
+      // The job is not necessarily what holds the port: a daemon started by hand before the
+      // agent was loaded keeps serving after launchd lets go. A stopping daemon closes its
+      // listener at once even while it drains, so a port still answering is that other one.
+      await probeUntil(port, (s) => s !== "ours", 2000);
     } catch {
       // launchctl itself refused (odd state - installed but unreachable) - fall through to the
-      // signal path below rather than leaving the daemon with no way to be stopped at all.
-      try {
-        process.kill(pid, "SIGTERM");
-      } catch {
-        // Already gone.
-      }
+      // signal below rather than leaving the daemon with no way to be stopped at all.
     }
-  } else {
+  }
+  if ((await probe(port)) === "ours") {
     try {
       process.kill(pid, "SIGTERM");
     } catch {
@@ -237,15 +314,36 @@ export async function stopDaemon() {
     }
   }
 
-  const deadline = Date.now() + 5000;
-  let state = await probe(port);
-  while (Date.now() < deadline && state === "ours") {
-    await sleep(100);
-    state = await probe(port);
-  }
-
+  // Only the port is waited on, not the process: it keeps draining its replies in the
+  // background, up to DRAIN_MS, and a replacement can bind the port meanwhile.
+  const state = await probeUntil(port, (s) => s !== "ours", 5000);
   cleanupFiles(paths);
   return { stopped: state !== "ours", via };
+}
+
+/**
+ * Under launchd, `kickstart -k` rather than stop-then-start: stopping unloads the agent, and
+ * launchd will not take it back until the old process has finished draining. Returns once the
+ * replacement - a different pid - is the one serving, not merely once the port answers, which
+ * the old process may still be doing for a moment after the signal.
+ */
+export async function restartDaemon({ port = defaultPort() } = {}) {
+  const paths = statePaths();
+  if (!(await launchdLoaded())) {
+    await stopDaemon();
+    return startDaemon({ port });
+  }
+  const before = readPidFile(paths.pid);
+  await runLaunchctl(["kickstart", "-k", `${guiDomain()}/${LABEL}`]);
+  const deadline = Date.now() + DRAIN_MS + 15_000;
+  while (Date.now() < deadline) {
+    const pid = readPidFile(paths.pid);
+    if (pid != null && pid !== before && (await probe(port)) === "ours") {
+      return { port, pid, already: false, via: "launchd" };
+    }
+    await sleep(200);
+  }
+  throw new Error(`the agent did not come back on port ${port}; check ${paths.log}`);
 }
 
 /**
