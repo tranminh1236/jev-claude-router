@@ -6,6 +6,7 @@ import { which, missingMessage, shellSafe } from "./which.mjs";
 import { loadEnv, jevKey, ENV_FILE_HINT } from "./env.mjs";
 import { AUTO_MODEL, SMALLEST_CONTEXT_TOKENS } from "./config.mjs";
 import { startProxy } from "./proxy.mjs";
+import { statePaths } from "./daemon.mjs";
 import { LOG_FILE, log } from "./log.mjs";
 
 const PROVIDER = "anthropic";
@@ -70,6 +71,16 @@ export function writeConfig(port, dir = join(tmpdir(), "jev-opencode")) {
 export const picksModel = (args) =>
   args.some((arg) => arg === "--model" || arg === "-m" || arg.startsWith("--model="));
 
+/**
+ * Options for this process's own startProxy() call. src/codex-cli.mjs and src/grok-cli.mjs
+ * both pass decisionLogFile: statePaths().decisions to their proxy starter - this one was
+ * missing it, so an opencode session's routing decisions never reached the shared decision
+ * log (or, downstream, the dashboard) at all.
+ */
+export function proxyOptions() {
+  return { decisionLogFile: statePaths().decisions };
+}
+
 export async function runOpencode() {
   loadEnv();
   const command = resolveOpencode();
@@ -83,7 +94,7 @@ export async function runOpencode() {
   const env = { ...process.env };
   let close = () => {};
   if (jevKey() && !picksModel(args)) {
-    const proxy = await startProxy();
+    const proxy = await startProxy(proxyOptions());
     env.OPENCODE_CONFIG = writeConfig(proxy.port);
     close = () => proxy.close?.();
     process.on("exit", close);

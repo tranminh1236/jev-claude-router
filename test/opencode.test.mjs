@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { opencodeConfig, picksModel, sentinelLimits, writeConfig } from "../src/opencode-cli.mjs";
+import { opencodeConfig, picksModel, sentinelLimits, writeConfig, proxyOptions } from "../src/opencode-cli.mjs";
 import { conversationKey, newTurnPrompt, sessionOf } from "../src/proxy.mjs";
+import { statePaths } from "../src/daemon.mjs";
 import { readFileSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -103,6 +104,13 @@ test("every CLI that must be told a window is told the same one", async () => {
     fs.readFileSync(new URL("../src/claude-settings.mjs", import.meta.url), "utf8"));
   assert.match(source, /CLAUDE_CODE_MAX_CONTEXT_TOKENS/, "Claude Code has to be told too");
   assert.match(source, /SMALLEST_CONTEXT_TOKENS/, "and told the shared number, not a literal");
+});
+
+test("wires the daemon's decisions log into the proxy it starts, same as the other launchers", () => {
+  // src/codex-cli.mjs and src/grok-cli.mjs both pass decisionLogFile: statePaths().decisions
+  // to their proxy starter; this one called startProxy() bare, so opencode's own decisions
+  // never reached ~/.jev-router/decisions.jsonl - or the dashboard - at all.
+  assert.deepEqual(proxyOptions(), { decisionLogFile: statePaths().decisions });
 });
 
 test("a window the user set themselves is left alone", async () => {
