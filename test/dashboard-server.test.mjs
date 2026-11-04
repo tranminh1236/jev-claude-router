@@ -134,3 +134,23 @@ test("rejects a request whose Host header does not name this server (DNS rebindi
   });
   assert.ok(status === 403 || status === 421, `expected 403/421, got ${status}`);
 });
+
+/**
+ * createDashboardServer awaited `server.listen` without ever listening for the server's own
+ * "error" event, so a taken port left the returned promise pending forever instead of
+ * rejecting - the caller (bin/jev-dashboard.mjs) would hang rather than report EADDRINUSE.
+ */
+test("createDashboardServer rejects instead of hanging when the port is already in use", async (t) => {
+  const decisionsFile = tmpFile("decisions");
+  const sessionsFile = tmpFile("sessions");
+  writeFileSync(decisionsFile, "");
+  writeFileSync(sessionsFile, "{}");
+
+  const first = await createDashboardServer({ decisionsFile, sessionsFile });
+  t.after(() => first.close());
+
+  await assert.rejects(
+    () => createDashboardServer({ port: first.port, decisionsFile, sessionsFile }),
+    /EADDRINUSE/,
+  );
+});

@@ -226,3 +226,23 @@ test("jev-router dashboard forwards to jev-dashboard.mjs, not jev-daemon.mjs", (
   // the SIGTERM result is read; the assertion is on stdout, not the exit code.
   assert.match(result.stdout, /\[jev-dashboard\] http:\/\/127\.0\.0\.1:/);
 });
+
+test("jev-dashboard.mjs reports a taken port instead of crashing with a raw stack trace", async () => {
+  const net = await import("node:net");
+  const blocker = net.createServer();
+  await new Promise((resolve) => blocker.listen(0, "127.0.0.1", resolve));
+  const takenPort = blocker.address().port;
+  try {
+    const home = isolatedHome();
+    const result = spawnSync(
+      process.execPath,
+      [join(BIN, "jev-dashboard.mjs"), "--port", String(takenPort)],
+      { encoding: "utf8", timeout: 2000, env: { HOME: home, USERPROFILE: home, PATH: process.env.PATH ?? "" } },
+    );
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /EADDRINUSE|already in use/i);
+    assert.doesNotMatch(result.stderr, /at Server\.setupListenHandle/, "should be a friendly message, not a raw stack trace");
+  } finally {
+    blocker.close();
+  }
+});

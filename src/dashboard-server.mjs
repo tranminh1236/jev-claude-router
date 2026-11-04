@@ -169,6 +169,12 @@ export async function createDashboardServer({
     }
   });
 
-  await new Promise((resolve) => server.listen(port, "127.0.0.1", resolve));
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(port, "127.0.0.1", () => {
+      server.removeListener("error", reject);
+      resolve();
+    });
+  });
   return { port: server.address().port, close: () => server.close() };
 }

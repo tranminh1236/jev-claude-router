@@ -16,11 +16,19 @@ function flagValue(name, fallback) {
 const port = Number(flagValue("--port", process.env.JEV_DASHBOARD_PORT ?? DEFAULT_PORT));
 
 const daemonPaths = statePaths();
-const { port: boundPort, close } = await createDashboardServer({
-  port,
-  decisionsFile: daemonPaths.decisions,
-  sessionsFile: join(daemonPaths.dir, "sessions.json"),
-});
+let boundPort;
+let close;
+try {
+  ({ port: boundPort, close } = await createDashboardServer({
+    port,
+    decisionsFile: daemonPaths.decisions,
+    sessionsFile: join(daemonPaths.dir, "sessions.json"),
+  }));
+} catch (err) {
+  const hint = err.code === "EADDRINUSE" ? ` (port ${port} is already in use - pick another with --port)` : "";
+  process.stderr.write(`[jev-dashboard] could not start: ${err.message}${hint}\n`);
+  process.exit(1);
+}
 
 console.log(`[jev-dashboard] http://127.0.0.1:${boundPort}`);
 
