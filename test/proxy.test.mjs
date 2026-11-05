@@ -110,6 +110,27 @@ test("promptPreview on a decision row is truncated, not the full prompt", async 
   assert.ok(row.promptPreview.length <= 120, `promptPreview must be truncated, got ${row.promptPreview.length} chars`);
 });
 
+/**
+ * Security review: promptPreview persists a slice of the user's own text verbatim. A pasted
+ * API key or token inside it would otherwise sit in plaintext on disk indefinitely.
+ */
+test("promptPreview redacts an API key or bearer token pasted into the prompt", async () => {
+  const file = join(tmpdir(), `decisions-${Date.now()}-${randomUUID()}.jsonl`);
+  const { port, close } = await startProxy({ upstream: mockUpstreamUrl, decisionLogFile: file });
+  const session = randomUUID();
+  await postTurn(port, {
+    model: "jev-auto",
+    tools: [{ name: "Bash" }],
+    messages: [{ role: "user", content: "my key is sk-abcdefghijklmnopqrstuvwxyz0123456789 fix this" }],
+    metadata: { user_id: JSON.stringify({ session_id: session }) },
+  });
+  await new Promise((r) => setTimeout(r, 20));
+  await close();
+  const row = readFileSync(file, "utf8").trim().split("\n").map((l) => JSON.parse(l))[0];
+  assert.doesNotMatch(row.promptPreview, /sk-abcdefghijklmnopqrstuvwxyz0123456789/);
+  assert.match(row.promptPreview, /\[redacted\]/);
+});
+
 test("never logs a decision row for a sub-agent turn", async () => {
   const file = join(tmpdir(), `decisions-${Date.now()}-${randomUUID()}.jsonl`);
   const { port, close } = await startProxy({ upstream: mockUpstreamUrl, decisionLogFile: file });

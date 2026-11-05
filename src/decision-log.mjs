@@ -12,7 +12,12 @@ import { writeAtomic } from "./claude-settings.mjs";
 export function appendLine(file, row) {
   try {
     mkdirSync(dirname(file), { recursive: true });
-    appendFileSync(file, `${JSON.stringify(row)}\n`);
+    // `mode` only takes effect when this call is the one creating the file (Node applies it
+    // to the underlying open() flags); an existing file keeps whatever mode it already has.
+    // Rows here can carry a slice of the user's own prompt text (promptPreview, src/proxy.mjs),
+    // so a freshly created log must not default to the open, umask-dependent mode a plain
+    // append would otherwise get - 0600 keeps it readable to this account only.
+    appendFileSync(file, `${JSON.stringify(row)}\n`, { mode: 0o600 });
   } catch {
     // A broken decision log must never take down the request it was describing.
   }

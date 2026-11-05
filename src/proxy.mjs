@@ -47,6 +47,25 @@ export function sanitizeSchema(node) {
   for (const v of Object.values(node)) sanitizeSchema(v);
 }
 
+// Patterns for the secret shapes most likely to end up pasted into a prompt: common vendor
+// API-key prefixes, a bearer/authorization header value, and any other long run of base64/hex-
+// alphabet characters (generic token/secret shape). Checked in this order so a matched vendor
+// prefix is not then re-masked by the generic rule eating the surrounding text too.
+const SECRET_PATTERNS = [
+  /\bsk-[A-Za-z0-9_-]{16,}/g,
+  /\bghp_[A-Za-z0-9]{20,}/g,
+  /\bAKIA[0-9A-Z]{16}/g,
+  /\b(?:[Bb]earer|[Aa]uthorization:)\s+\S+/g,
+  /\b[A-Za-z0-9_-]{32,}\b/g,
+];
+
+/** Masks common secret/token shapes before a prompt slice is persisted to disk (see decisionRow). */
+export function redactSecrets(text) {
+  let out = text;
+  for (const pattern of SECRET_PATTERNS) out = out.replace(pattern, "[redacted]");
+  return out;
+}
+
 /**
  * The text of a genuinely new user turn, or null.
  *
@@ -329,7 +348,7 @@ export async function startProxy({
                   // picked up this code) - the dashboard then shows "unknown" with nothing else
                   // to tell two routed requests apart. A short, truncated slice of the prompt
                   // that drove this decision is a fallback a person can actually read.
-                  promptPreview: prompt.slice(0, 100),
+                  promptPreview: redactSecrets(prompt.slice(0, 100)),
                   contextTokens, policyVersion: 1, judgments: null,
                   probabilities: jev?.probabilities ?? null,
                 };

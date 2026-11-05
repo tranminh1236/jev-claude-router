@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, writeFileSync, existsSync, mkdtempSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdtempSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { appendLine, trimDecisionLog, maybeTrimDecisionLog } from "../src/decision-log.mjs";
@@ -17,6 +17,18 @@ test("appendLine writes one JSON line per call", () => {
 
 test("appendLine never throws when the directory cannot be created", () => {
   assert.doesNotThrow(() => appendLine("/nonexistent-root/no/such/dir/x.jsonl", { a: 1 }));
+});
+
+/**
+ * Security review: decisions.jsonl now carries a slice of the user's own prompt text
+ * (promptPreview, src/proxy.mjs). Created world-readable (the open()/umask default), any
+ * other local account can read it. appendLine must pin it owner-only on creation.
+ */
+test("appendLine creates a new file owner-read/write only, not world-readable", () => {
+  const freshFile = join(dir, `fresh-${Date.now()}.jsonl`);
+  appendLine(freshFile, { a: 1 });
+  const mode = statSync(freshFile).mode & 0o777;
+  assert.equal(mode, 0o600, `expected mode 0600, got ${mode.toString(8)}`);
 });
 
 test("trimDecisionLog keeps exactly the last maxLines lines", () => {
