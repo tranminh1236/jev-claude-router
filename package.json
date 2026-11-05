@@ -17,7 +17,10 @@
     "jev-claude": "bin/jev-claude.mjs",
     "jev-codex": "bin/jev-codex.mjs",
     "jev-grok": "bin/jev-grok.mjs",
-    "jev-opencode": "bin/jev-opencode.mjs"
+    "jev-opencode": "bin/jev-opencode.mjs",
+    "jev-daemon": "bin/jev-daemon.mjs",
+    "jev-dashboard": "bin/jev-dashboard.mjs",
+    "jev-router": "bin/jev-router.mjs"
   },
   "scripts": {
     "test": "node --test"

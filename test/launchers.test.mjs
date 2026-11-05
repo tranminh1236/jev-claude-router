@@ -195,3 +195,54 @@ test("nothing is rewritten when no shell is involved", () => {
   const args = ['a="b c"', "plain"];
   assert.deepEqual(shellSafe(args, false), args);
 });
+
+test("jev-router dispatches daemon subcommands, honors JEV_DAEMON_PORT at call time, and refuses unknown ones", () => {
+  const home = isolatedHome();
+  writeFileSync(join(home, ".jev-router.env"), "JEV_DAEMON_PORT=61888\n");
+
+  const ok = spawnSync(process.execPath, [join(BIN, "jev-router.mjs"), "daemon", "status"], {
+    encoding: "utf8",
+    env: { HOME: home, USERPROFILE: home, PATH: process.env.PATH ?? "" },
+  });
+  // No daemon has ever run against this isolated home, so this is a clean read of the
+  // "not running" path - not a claim about any daemon on whatever machine runs the suite.
+  assert.equal(ok.status, 1, `expected "not running", got:\n${ok.stdout}${ok.stderr}`);
+  assert.match(ok.stdout, /daemon/i);
+  assert.match(ok.stderr, /port 61888/, "JEV_DAEMON_PORT from ~/.jev-router.env must reach daemonStatus, not a module-load-time snapshot");
+
+  const bad = spawnSync(process.execPath, [join(BIN, "jev-router.mjs"), "nonsense"], { encoding: "utf8" });
+  assert.notEqual(bad.status, 0);
+  assert.match(bad.stderr, /usage/i);
+});
+
+test("jev-router dashboard forwards to jev-dashboard.mjs, not jev-daemon.mjs", () => {
+  const home = isolatedHome();
+  const result = spawnSync(
+    process.execPath,
+    [join(BIN, "jev-router.mjs"), "dashboard", "--port", "0"],
+    { encoding: "utf8", timeout: 2000, env: { HOME: home, USERPROFILE: home, PATH: process.env.PATH ?? "" } },
+  );
+  // jev-dashboard.mjs never exits on its own (it's a server), so a 2s timeout is expected and
+  // the SIGTERM result is read; the assertion is on stdout, not the exit code.
+  assert.match(result.stdout, /\[jev-dashboard\] http:\/\/127\.0\.0\.1:/);
+});
+
+test("jev-dashboard.mjs reports a taken port instead of crashing with a raw stack trace", async () => {
+  const net = await import("node:net");
+  const blocker = net.createServer();
+  await new Promise((resolve) => blocker.listen(0, "127.0.0.1", resolve));
+  const takenPort = blocker.address().port;
+  try {
+    const home = isolatedHome();
+    const result = spawnSync(
+      process.execPath,
+      [join(BIN, "jev-dashboard.mjs"), "--port", String(takenPort)],
+      { encoding: "utf8", timeout: 2000, env: { HOME: home, USERPROFILE: home, PATH: process.env.PATH ?? "" } },
+    );
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /EADDRINUSE|already in use/i);
+    assert.doesNotMatch(result.stderr, /at Server\.setupListenHandle/, "should be a friendly message, not a raw stack trace");
+  } finally {
+    blocker.close();
+  }
+});

@@ -1,6 +1,151 @@
-import test from "node:test";
+import test, { after } from "node:test";
 import assert from "node:assert/strict";
-import { sanitizeSchema, newTurnPrompt, applyTier, conversationKey, sessionOf } from "../src/proxy.mjs";
+import http from "node:http";
+import { randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { readFileSync, existsSync } from "node:fs";
+import { sanitizeSchema, newTurnPrompt, applyTier, conversationKey, sessionOf, startProxy } from "../src/proxy.mjs";
+
+// A stand-in for api.anthropic.com: answers every request with a small JSON body, just enough
+// for captureUsage to have something to read. What it returns is not under test here.
+const mockUpstream = http.createServer((req, res) => {
+  req.resume();
+  res.writeHead(200, { "content-type": "application/json" });
+  res.end(`{"model":"claude-sonnet-5","usage":{"input_tokens":5,"output_tokens":10}}`);
+});
+await new Promise((resolve) => mockUpstream.listen(0, "127.0.0.1", resolve));
+const mockUpstreamUrl = `http://127.0.0.1:${mockUpstream.address().port}`;
+after(() => mockUpstream.close());
+
+function postTurn(port, body) {
+  return new Promise((resolve) => {
+    const req = http.request(
+      { host: "127.0.0.1", port, method: "POST", path: "/v1/messages", agent: false },
+      (res) => {
+        res.on("data", () => {});
+        res.on("end", resolve);
+        res.on("error", resolve);
+      },
+    );
+    req.on("error", resolve);
+    req.end(JSON.stringify(body));
+  });
+}
+
+// One full, routable agent turn: the sentinel model, a tool so newTurnPrompt sees a real turn,
+// and a fresh session/conversation so it is never mistaken for a sub-agent.
+async function postRoutedTurn(port) {
+  const session = randomUUID();
+  await postTurn(port, {
+    model: "jev-auto",
+    tools: [{ name: "Bash" }],
+    messages: [{ role: "user", content: "please fix the failing test" }],
+    metadata: { user_id: JSON.stringify({ session_id: session }) },
+  });
+}
+
+// A sub-agent spawn: the parent turn first marks the session routed (an auxiliary call with no
+// tools, so it carries no prompt and is never logged itself), then a second request in the same
+// session opens a brand-new conversation naming a concrete model - exactly how Claude Code
+// starts a sub-agent - which `isSubagentSpawn` reads as one.
+async function postSubagentTurn(port) {
+  const session = randomUUID();
+  await postTurn(port, {
+    model: "jev-auto",
+    messages: [{ role: "user", content: "aux call, no tools" }],
+    metadata: { user_id: JSON.stringify({ session_id: session }) },
+  });
+  await postTurn(port, {
+    model: "claude-sonnet-4-6",
+    tools: [{ name: "Bash" }],
+    messages: [{ role: "user", content: "sub-agent task" }],
+    metadata: { user_id: JSON.stringify({ session_id: session }) },
+  });
+}
+
+test("logs a decision row with the reqId usage capture uses, when decisionLogFile is set", async () => {
+  const file = join(tmpdir(), `decisions-${Date.now()}-${randomUUID()}.jsonl`);
+  const { port, close } = await startProxy({ upstream: mockUpstreamUrl, decisionLogFile: file });
+  await postRoutedTurn(port);
+  // captureUsage writes the usage row off the upstream response's own "end" event, which is
+  // not ordered against the client response's "end" that postTurn awaits - give it a moment.
+  await new Promise((r) => setTimeout(r, 20));
+  await close();
+  const lines = readFileSync(file, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  const row = lines[0];
+  assert.equal(row.kind, "decision");
+  assert.equal(row.provider, "claude");
+  assert.ok(row.reqId);
+  assert.equal(typeof row.to, "string");
+  // writeStatus(session, { tier, ...fresh, at }) puts confidence on the status line; the
+  // decision row dropped the same field, so the dashboard has no way to show how sure the
+  // router was about a given call.
+  assert.ok("confidence" in row, "decision row must carry confidence, like the status line does");
+
+  // The decision row and the usage row captureUsage writes from the same request are two
+  // separate appends - the dashboard only joins them correctly if they share one reqId.
+  const usageRow = lines.find((l) => l.kind === "usage");
+  assert.ok(usageRow, "captureUsage never wrote a usage row");
+  assert.equal(usageRow.reqId, row.reqId);
+  // When a session's own project mapping is missing, a prompt preview is the only way left
+  // to tell which request/project a decision row belongs to.
+  assert.equal(row.promptPreview, "please fix the failing test");
+});
+
+test("promptPreview on a decision row is truncated, not the full prompt", async () => {
+  const file = join(tmpdir(), `decisions-${Date.now()}-${randomUUID()}.jsonl`);
+  const { port, close } = await startProxy({ upstream: mockUpstreamUrl, decisionLogFile: file });
+  const longPrompt = "x".repeat(500);
+  const session = randomUUID();
+  await postTurn(port, {
+    model: "jev-auto",
+    tools: [{ name: "Bash" }],
+    messages: [{ role: "user", content: longPrompt }],
+    metadata: { user_id: JSON.stringify({ session_id: session }) },
+  });
+  await new Promise((r) => setTimeout(r, 20));
+  await close();
+  const row = readFileSync(file, "utf8").trim().split("\n").map((l) => JSON.parse(l))[0];
+  assert.ok(row.promptPreview.length <= 120, `promptPreview must be truncated, got ${row.promptPreview.length} chars`);
+});
+
+/**
+ * Security review: promptPreview persists a slice of the user's own text verbatim. A pasted
+ * API key or token inside it would otherwise sit in plaintext on disk indefinitely.
+ */
+test("promptPreview redacts an API key or bearer token pasted into the prompt", async () => {
+  const file = join(tmpdir(), `decisions-${Date.now()}-${randomUUID()}.jsonl`);
+  const { port, close } = await startProxy({ upstream: mockUpstreamUrl, decisionLogFile: file });
+  const session = randomUUID();
+  await postTurn(port, {
+    model: "jev-auto",
+    tools: [{ name: "Bash" }],
+    messages: [{ role: "user", content: "my key is sk-abcdefghijklmnopqrstuvwxyz0123456789 fix this" }],
+    metadata: { user_id: JSON.stringify({ session_id: session }) },
+  });
+  await new Promise((r) => setTimeout(r, 20));
+  await close();
+  const row = readFileSync(file, "utf8").trim().split("\n").map((l) => JSON.parse(l))[0];
+  assert.doesNotMatch(row.promptPreview, /sk-abcdefghijklmnopqrstuvwxyz0123456789/);
+  assert.match(row.promptPreview, /\[redacted\]/);
+});
+
+test("never logs a decision row for a sub-agent turn", async () => {
+  const file = join(tmpdir(), `decisions-${Date.now()}-${randomUUID()}.jsonl`);
+  const { port, close } = await startProxy({ upstream: mockUpstreamUrl, decisionLogFile: file });
+  await postSubagentTurn(port);
+  await close();
+  assert.equal(existsSync(file), false);
+});
+
+test("decisionLogFile omitted logs nothing and changes no existing behavior", async () => {
+  const { port, close } = await startProxy({ upstream: mockUpstreamUrl });
+  await postRoutedTurn(port);
+  await close();
+  // no assertion beyond "did not throw" - this pins backward compatibility for every
+  // existing test in this file that calls startProxy() without the new options.
+});
 
 test("only the sentinel model is routed", () => {
   assert.equal(isAuto("jev-auto"), true);
@@ -185,6 +330,36 @@ test("an unknown tier leaves the request untouched", () => {
   const body = { model: "claude-sonnet-4-6", thinking: { type: "adaptive" } };
   applyTier(body, "nonsense");
   assert.equal(body.model, "claude-sonnet-4-6");
+});
+
+test("routing to haiku clamps max_tokens composed for a bigger tier", () => {
+  const body = { model: "claude-sonnet-4-6", max_tokens: 128000 };
+  applyTier(body, "haiku");
+  assert.equal(body.max_tokens, 64000);
+});
+
+test("routing to haiku leaves max_tokens alone when already under the cap", () => {
+  const body = { model: "claude-sonnet-4-6", max_tokens: 40000 };
+  applyTier(body, "haiku");
+  assert.equal(body.max_tokens, 40000, "the clamp only lowers a value over the cap, never raises one");
+});
+
+test("routing to sonnet leaves max_tokens at exactly the cap", () => {
+  const body = { model: "jev-auto", max_tokens: 128000 };
+  applyTier(body, "sonnet");
+  assert.equal(body.max_tokens, 128000, "exactly at the cap is not over it");
+});
+
+test("a body with no max_tokens is left untouched", () => {
+  const body = { model: "jev-auto" };
+  applyTier(body, "haiku");
+  assert.equal("max_tokens" in body, false, "the clamp must not invent a max_tokens field");
+});
+
+test("an unknown tier leaves max_tokens alone too", () => {
+  const body = { model: "claude-sonnet-4-6", max_tokens: 128000 };
+  applyTier(body, "nonsense");
+  assert.equal(body.max_tokens, 128000);
 });
 
 test("a conversation keeps one key as it grows, and differs from a sub-agent", () => {

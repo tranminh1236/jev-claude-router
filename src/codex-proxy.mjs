@@ -7,6 +7,7 @@ import { askJev } from "./router.mjs";
 import { decide } from "./policy.mjs";
 import { conversationKey, isAgentSession, newTurnPrompt } from "./responses.mjs";
 import { log, announceServedModel } from "./log.mjs";
+import { appendLine } from "./decision-log.mjs";
 
 const CHATGPT_BASE_URL = "https://chatgpt.com/backend-api/codex";
 const API_BASE_URL = "https://api.openai.com/v1";
@@ -102,6 +103,7 @@ export async function startCodexProxy({
   chatgptBaseURL = CHATGPT_BASE_URL,
   apiBaseURL = API_BASE_URL,
   route = askJev,
+  decisionLogFile = null,
 } = {}) {
   const states = new Map();
   // Consecutive turns a downgrade has been refused, per conversation.
@@ -146,6 +148,14 @@ export async function startCodexProxy({
               tier = decision.tier;
               states.set(key, tier);
               streaks.set(key, decision.cheapStreak);
+              if (decisionLogFile) {
+                appendLine(decisionLogFile, {
+                  kind: "decision", reqId: randomUUID(), ts: Date.now(), provider: "codex",
+                  session: null, convo: key, from: current, to: tier, reason: decision.reason,
+                  contextTokens, policyVersion: 1, judgments: null,
+                  probabilities: jev?.probabilities ?? null, usage: null, servedModel: null,
+                });
+              }
               routing = { tier, confidence: jev?.confidence ?? null, reason: decision.reason };
               debug(
                 `${key}${subagent ? " subagent" : ""} ${current} -> ${tier} ` +

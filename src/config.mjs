@@ -15,12 +15,21 @@ import { choice } from "@typesafe-ai/sdk";
  *
  * `thinking` is a Claude capability flag. Haiku supports neither thinking nor effort, so both
  * are stripped when routing down to it; sending `effort` to Haiku 4.5 is a hard 400.
+ *
+ * `maxOutputTokens` is each tier's output cap on Claude, used to clamp a request's `max_tokens`
+ * after a downgrade (see `applyTier` in proxy.mjs). Haiku's 64000 is measured - a real API 400
+ * named that exact ceiling. The other three share `claude-opus-5` or `claude-sonnet-5` and were
+ * observed to accept 128000 without error in the same incident, so 128000 is a safe floor for
+ * them here, not a confirmed exact ceiling. `fable` and `opus` resolve to the identical
+ * underlying model id, so their caps must stay identical - editing one without the other would
+ * silently desync them.
  */
 export const TIERS = [
   {
     name: "haiku",
     family: "haiku",
     thinking: false,
+    maxOutputTokens: 64000,
     claude: { id: "claude-haiku-4-5-20251001", effort: null },
     codex: { id: "gpt-5.6-luna", effort: "low" },
     grok: { id: "grok-4.5", effort: "low" },
@@ -29,6 +38,7 @@ export const TIERS = [
     name: "sonnet",
     family: "sonnet",
     thinking: true,
+    maxOutputTokens: 128000,
     claude: { id: "claude-sonnet-5", effort: "high" },
     codex: { id: "gpt-5.6-terra", effort: "medium" },
     grok: { id: "grok-4.5", effort: "high" },
@@ -37,6 +47,7 @@ export const TIERS = [
     name: "opus",
     family: "opus",
     thinking: true,
+    maxOutputTokens: 128000,
     claude: { id: "claude-opus-5", effort: "high" },
     codex: { id: "gpt-5.6-sol", effort: "high" },
     grok: { id: "grok-4.6", effort: "high" },
@@ -45,6 +56,7 @@ export const TIERS = [
     name: "fable",
     family: "fable",
     thinking: true,
+    maxOutputTokens: 128000,
     // The top tier is the strong model at a deeper effort, not a costlier model. Fable and
     // gpt-6-astra used to sit here; both bill extra credits on top of a subscription, so
     // neither is worth reaching for when the strong model can simply think longer.
@@ -132,8 +144,14 @@ export const availableTiers = () => {
 };
 
 export const THRESHOLDS = {
-  /** Below this Jev confidence we refuse to downgrade and cap upgrades at `uncertainCeiling`. */
-  minConfidence: 0.6,
+  /**
+   * Below this probability for the top answer we refuse to downgrade and cap upgrades at
+   * `uncertainCeiling`. Confidence measures how concentrated the whole distribution is, not
+   * how likely the top answer is to be right — a distribution can be spread across two tiers
+   * and still have one of them clearly the better bet, or sharply peaked on a wrong one. The
+   * gate gives the benefit of the doubt only when the top answer itself is actually unlikely.
+   */
+  minTopProbability: 0.6,
   /** Safest tier to land on when Jev is unsure. */
   uncertainCeiling: "sonnet",
   /**

@@ -5,6 +5,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
+import { randomUUID } from "node:crypto";
 import { applyGrokTier, grokTierSpec, safeGrokUpstream, startGrokProxy } from "../src/grok-proxy.mjs";
 import { grokArgs, grokUpstream } from "../src/grok-cli.mjs";
 import {
@@ -405,4 +406,38 @@ test("a session_title errand is pinned to the cheapest tier without asking Jev",
   assert.equal(calls, 0, "a title errand must not cost a Jev call");
   assert.equal(title.model, grokTierSpec("haiku").model);
   assert.notEqual(title.model, "jev-auto", "the sentinel is not a model xAI can serve");
+});
+
+test("logs a decision row for a routed agent turn", async (t) => {
+  const file = join(tmpdir(), `grok-decisions-${Date.now()}-${randomUUID()}.jsonl`);
+  const upstream = http.createServer((req, res) => {
+    req.resume();
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.end('event: response.created\ndata: {"type":"response.created"}\n\n');
+  });
+  await new Promise((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+  t.after(() => upstream.close());
+
+  const proxy = await startGrokProxy({
+    baseURL: `http://127.0.0.1:${upstream.address().port}/v1`,
+    route: async () => ({ choice: "opus", confidence: 0.91, probabilities: {} }),
+    decisionLogFile: file,
+  });
+  t.after(() => proxy.close());
+
+  await fetch(`http://127.0.0.1:${proxy.port}/v1/responses`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      model: "jev-auto",
+      prompt_cache_key: "session-decision",
+      input: [{ type: "message", role: "user", content: "fix the race" }],
+    }),
+  }).then((r) => r.text());
+
+  const row = JSON.parse(readFileSync(file, "utf8").trim());
+  assert.equal(row.kind, "decision");
+  assert.equal(row.provider, "grok");
+  assert.equal(row.usage, null);
+  assert.equal(row.servedModel, null);
 });
