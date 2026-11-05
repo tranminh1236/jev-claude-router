@@ -103,7 +103,7 @@ const PAGE = `<!doctype html>
   <input id="filter-keyword" type="text" placeholder="Filter by keyword (reason, model, project...)">
 </div>
 <table id="decisions">
-  <thead><tr><th>Time</th><th>Provider</th><th>Project</th><th>From</th><th>To</th><th>Confidence</th><th>Reason</th><th>Served</th></tr></thead>
+  <thead><tr><th>Time</th><th>Provider</th><th>Project</th><th>From</th><th>To</th><th>Confidence</th><th>Reason</th><th>Served</th><th>Prompt</th></tr></thead>
   <tbody></tbody>
 </table>
 <script>
@@ -123,7 +123,7 @@ function populateFilter(select, values) {
 
 function matchesKeyword(row, keyword) {
   if (!keyword) return true;
-  const haystack = [row.project, row.provider, row.from, row.to, row.reason, row.servedModel]
+  const haystack = [row.project, row.provider, row.from, row.to, row.reason, row.servedModel, row.promptPreview]
     .map((v) => String(v ?? '').toLowerCase())
     .join(' ');
   return haystack.includes(keyword.toLowerCase());
@@ -145,7 +145,8 @@ function render() {
     '<tr><td>' + esc(new Date(row.ts).toLocaleTimeString()) + '</td><td>' + esc(row.provider) +
     '</td><td>' + esc(row.project) + '</td><td>' + esc(row.from) + '</td><td>' + esc(row.to) +
     '</td><td>' + esc(row.confidence != null ? row.confidence.toFixed(2) : '') +
-    '</td><td>' + esc(row.reason) + '</td><td>' + esc(row.servedModel) + '</td></tr>'
+    '</td><td>' + esc(row.reason) + '</td><td>' + esc(row.servedModel) +
+    '</td><td>' + esc(row.promptPreview) + '</td></tr>'
   ).join('');
 }
 

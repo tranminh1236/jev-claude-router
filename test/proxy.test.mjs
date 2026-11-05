@@ -88,6 +88,26 @@ test("logs a decision row with the reqId usage capture uses, when decisionLogFil
   const usageRow = lines.find((l) => l.kind === "usage");
   assert.ok(usageRow, "captureUsage never wrote a usage row");
   assert.equal(usageRow.reqId, row.reqId);
+  // When a session's own project mapping is missing, a prompt preview is the only way left
+  // to tell which request/project a decision row belongs to.
+  assert.equal(row.promptPreview, "please fix the failing test");
+});
+
+test("promptPreview on a decision row is truncated, not the full prompt", async () => {
+  const file = join(tmpdir(), `decisions-${Date.now()}-${randomUUID()}.jsonl`);
+  const { port, close } = await startProxy({ upstream: mockUpstreamUrl, decisionLogFile: file });
+  const longPrompt = "x".repeat(500);
+  const session = randomUUID();
+  await postTurn(port, {
+    model: "jev-auto",
+    tools: [{ name: "Bash" }],
+    messages: [{ role: "user", content: longPrompt }],
+    metadata: { user_id: JSON.stringify({ session_id: session }) },
+  });
+  await new Promise((r) => setTimeout(r, 20));
+  await close();
+  const row = readFileSync(file, "utf8").trim().split("\n").map((l) => JSON.parse(l))[0];
+  assert.ok(row.promptPreview.length <= 120, `promptPreview must be truncated, got ${row.promptPreview.length} chars`);
 });
 
 test("never logs a decision row for a sub-agent turn", async () => {

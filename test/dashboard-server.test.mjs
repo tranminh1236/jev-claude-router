@@ -157,6 +157,26 @@ test("the dashboard page has table styling, sorts rows newest-first, and has a k
   assert.match(html, /\.sort\(/, "rows must be explicitly sorted (newest first), not just trust API order");
 });
 
+/**
+ * Project resolution depends on sessions.json having seen the session's cwd; a session the
+ * hook never recorded shows "unknown" with no other way to tell which request a row is. The
+ * row's promptPreview (src/proxy.mjs) is the fallback - it must be visible and searchable.
+ */
+test("the dashboard page shows and searches the prompt preview", async (t) => {
+  const decisionsFile = tmpFile("decisions");
+  const sessionsFile = tmpFile("sessions");
+  writeFileSync(decisionsFile, "");
+  writeFileSync(sessionsFile, "{}");
+
+  const { port, close } = await createDashboardServer({ decisionsFile, sessionsFile });
+  t.after(() => close());
+
+  const html = await fetch(`http://127.0.0.1:${port}/`).then((r) => r.text());
+  assert.match(html, /<th>Prompt<\/th>/i);
+  assert.match(html, /row\.promptPreview/, "a row's prompt preview must actually be rendered");
+  assert.match(html, /promptPreview/, "the keyword filter must search promptPreview too");
+});
+
 test("rejects a request whose Host header does not name this server (DNS rebinding)", async (t) => {
   const decisionsFile = tmpFile("decisions");
   const sessionsFile = tmpFile("sessions");

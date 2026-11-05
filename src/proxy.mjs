@@ -324,6 +324,12 @@ export async function startProxy({
                   kind: "decision", reqId: randomUUID(), ts: Date.now(), provider: "claude",
                   session, convo: key, from: current, to: tier, reason: fresh.reason,
                   confidence: fresh.confidence,
+                  // A session's project is resolved from sessions.json by cwd, which is missing
+                  // for a session the SessionStart hook never saw (or recorded before the daemon
+                  // picked up this code) - the dashboard then shows "unknown" with nothing else
+                  // to tell two routed requests apart. A short, truncated slice of the prompt
+                  // that drove this decision is a fallback a person can actually read.
+                  promptPreview: prompt.slice(0, 100),
                   contextTokens, policyVersion: 1, judgments: null,
                   probabilities: jev?.probabilities ?? null,
                 };
