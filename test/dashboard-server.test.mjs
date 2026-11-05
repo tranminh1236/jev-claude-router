@@ -137,6 +137,26 @@ test("the dashboard page shows confidence, rows without usage, and project/provi
   assert.match(html, /row\.confidence/, "a row's confidence must actually be rendered");
 });
 
+/**
+ * UI polish request: a readable table (title/header styling), newest-first ordering made
+ * explicit client-side (not just relied on from the API), and a free-text keyword filter
+ * searching across a row's visible fields.
+ */
+test("the dashboard page has table styling, sorts rows newest-first, and has a keyword filter", async (t) => {
+  const decisionsFile = tmpFile("decisions");
+  const sessionsFile = tmpFile("sessions");
+  writeFileSync(decisionsFile, "");
+  writeFileSync(sessionsFile, "{}");
+
+  const { port, close } = await createDashboardServer({ decisionsFile, sessionsFile });
+  t.after(() => close());
+
+  const html = await fetch(`http://127.0.0.1:${port}/`).then((r) => r.text());
+  assert.match(html, /<style>/, "page must carry real table/header styling, not unstyled markup");
+  assert.match(html, /<input id="filter-keyword"/, "a free-text keyword filter input must exist");
+  assert.match(html, /\.sort\(/, "rows must be explicitly sorted (newest first), not just trust API order");
+});
+
 test("rejects a request whose Host header does not name this server (DNS rebinding)", async (t) => {
   const decisionsFile = tmpFile("decisions");
   const sessionsFile = tmpFile("sessions");

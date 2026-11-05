@@ -74,13 +74,33 @@ export function buildSummary(rows, { baselineModel }) {
 
 const PAGE = `<!doctype html>
 <html>
-<head><meta charset="utf-8"><title>Jev Router Dashboard</title></head>
+<head>
+<meta charset="utf-8"><title>Jev Router Dashboard</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 2rem; color: #1a1a1a; background: #fafafa; }
+  h1 { font-size: 1.4rem; margin-bottom: 0.25rem; }
+  #summary { color: #555; margin-bottom: 1rem; }
+  .controls { display: flex; gap: 1rem; align-items: center; margin-bottom: 1rem; flex-wrap: wrap; }
+  .controls label { font-size: 0.85rem; color: #555; }
+  select, input { padding: 0.3rem 0.5rem; border: 1px solid #ccc; border-radius: 4px; font-size: 0.9rem; }
+  input#filter-keyword { min-width: 16rem; }
+  table { border-collapse: collapse; width: 100%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+  thead th {
+    text-align: left; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.03em;
+    color: #666; background: #f0f0f0; padding: 0.5rem 0.75rem; position: sticky; top: 0;
+  }
+  tbody td { padding: 0.4rem 0.75rem; border-top: 1px solid #eee; font-size: 0.9rem; }
+  tbody tr:nth-child(even) { background: #fcfcfc; }
+  tbody tr:hover { background: #f5f8ff; }
+</style>
+</head>
 <body>
 <h1>Jev Router</h1>
 <div id="summary"></div>
-<div>
-  Project: <select id="filter-project"><option value="">All</option></select>
-  Provider: <select id="filter-provider"><option value="">All</option></select>
+<div class="controls">
+  <label>Project <select id="filter-project"><option value="">All</option></select></label>
+  <label>Provider <select id="filter-provider"><option value="">All</option></select></label>
+  <input id="filter-keyword" type="text" placeholder="Filter by keyword (reason, model, project...)">
 </div>
 <table id="decisions">
   <thead><tr><th>Time</th><th>Provider</th><th>Project</th><th>From</th><th>To</th><th>Confidence</th><th>Reason</th><th>Served</th></tr></thead>
@@ -101,13 +121,25 @@ function populateFilter(select, values) {
   if (unique.includes(current)) select.value = current;
 }
 
+function matchesKeyword(row, keyword) {
+  if (!keyword) return true;
+  const haystack = [row.project, row.provider, row.from, row.to, row.reason, row.servedModel]
+    .map((v) => String(v ?? '').toLowerCase())
+    .join(' ');
+  return haystack.includes(keyword.toLowerCase());
+}
+
 function render() {
   const projectFilter = document.querySelector('#filter-project').value;
   const providerFilter = document.querySelector('#filter-provider').value;
-  const rows = lastDecisions.filter((row) =>
-    (!projectFilter || row.project === projectFilter) &&
-    (!providerFilter || row.provider === providerFilter)
-  );
+  const keyword = document.querySelector('#filter-keyword').value.trim();
+  const rows = lastDecisions
+    .filter((row) =>
+      (!projectFilter || row.project === projectFilter) &&
+      (!providerFilter || row.provider === providerFilter) &&
+      matchesKeyword(row, keyword)
+    )
+    .sort((a, b) => b.ts - a.ts);
   const tbody = document.querySelector('#decisions tbody');
   tbody.innerHTML = rows.map((row) =>
     '<tr><td>' + esc(new Date(row.ts).toLocaleTimeString()) + '</td><td>' + esc(row.provider) +
@@ -132,6 +164,7 @@ async function refresh() {
 }
 document.querySelector('#filter-project').addEventListener('change', render);
 document.querySelector('#filter-provider').addEventListener('change', render);
+document.querySelector('#filter-keyword').addEventListener('input', render);
 refresh();
 setInterval(refresh, 5000);
 </script>
