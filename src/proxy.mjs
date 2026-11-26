@@ -316,9 +316,15 @@ export async function startProxy({
             if (prompt) {
               const available = availableTiers();
               contextTokens = Math.round(JSON.stringify(body.messages).length / 4);
+              // Once the model has thought out loud, that reasoning rides along in every later
+              // request's message history regardless of tier - haiku is the one tier that drops
+              // `thinking`, so decide() must not route into it and leave it there to be ignored.
+              const hasThinking = body.messages?.some(
+                (m) => Array.isArray(m?.content) && m.content.some((b) => b?.type === "thinking" || b?.type === "redacted_thinking"),
+              ) ?? false;
               jev = await askJev({ prompt, current, contextTokens, available });
               const { tier, reason, cheapStreak } = decide({
-                prompt, jev, current, available, contextTokens, cheapStreak: convo.cheapStreak ?? 0,
+                prompt, jev, current, available, contextTokens, cheapStreak: convo.cheapStreak ?? 0, hasThinking,
               });
               convo.tier = tier;
               convo.cheapStreak = cheapStreak;

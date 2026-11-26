@@ -1,4 +1,4 @@
-import { TIER_NAMES, THRESHOLDS, OVERRIDE_PATTERNS, rankOf } from "./config.mjs";
+import { TIER_NAMES, THRESHOLDS, OVERRIDE_PATTERNS, rankOf, tierSpec } from "./config.mjs";
 
 /**
  * How short the reply should be, which says nothing about how hard the question is. Jev is
@@ -68,9 +68,12 @@ function clampToAvailable(tier, available) {
  * @param {string[]} input.available   tier names the account can run
  * @param {number} input.contextTokens approximate size of the conversation so far
  * @param {number} input.cheapStreak   consecutive turns a downgrade has been refused
+ * @param {boolean} input.hasThinking  true when a message already in the conversation carries
+ *   a `thinking`/`redacted_thinking` block - landing on a tier that strips `thinking` would make
+ *   the API silently ignore it on every later turn, not refuse the request
  * @returns {{tier: string, reason: string, changed: boolean, cheapStreak: number}}
  */
-export function decide({ prompt, jev, current, available, contextTokens = 0, cheapStreak = 0 }) {
+export function decide({ prompt, jev, current, available, contextTokens = 0, cheapStreak = 0, hasThinking = false }) {
   // `streak` travels with the answer because `decide` holds no state of its own; the caller
   // keeps it per conversation and hands it back next turn. Every path that is not a refused
   // downgrade clears it, so the count only ever means "turns in a row asking to come down".
@@ -104,6 +107,15 @@ export function decide({ prompt, jev, current, available, contextTokens = 0, che
     if (rankOf(target) < rankOf(current)) return settle(current, "low-confidence-no-downgrade", cheapStreak);
     const ceiling = Math.max(rankOf(current), rankOf(THRESHOLDS.uncertainCeiling));
     if (rankOf(target) > ceiling) return settle(TIER_NAMES[ceiling], "low-confidence-capped");
+  }
+
+  // Only haiku strips `thinking` (config.mjs TIERS). Once the conversation already carries a
+  // thinking block, routing to it does not fail loudly - the API just stops echoing the chain
+  // of thought back on every turn after, silently, forever, since those messages stay in
+  // history regardless of tier. Unlike the cache-rebuild guard below, there is no streak that
+  // earns this back: a run of cheap turns never makes dropped reasoning cheap to lose.
+  if (rankOf(target) < rankOf(current) && hasThinking && !tierSpec(target)?.thinking) {
+    return settle(current, "no-downgrade-drops-thinking", cheapStreak);
   }
 
   if (rankOf(target) < rankOf(current) && contextTokens > THRESHOLDS.downgradeMaxContextTokens) {
