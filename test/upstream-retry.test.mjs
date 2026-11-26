@@ -50,6 +50,15 @@ function dieMidStreamUpstream() {
   };
 }
 
+/** Rejects with `label` if `promise` has not settled within `ms` - a bounded way to assert
+ *  "this does not hang" instead of waiting forever on a real one. */
+function withTimeout(promise, ms, label) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)),
+  ]);
+}
+
 function post(port, { path = "/v1/messages", method = "POST", headers = {}, signal } = {}) {
   const body = JSON.stringify({ model: "claude-sonnet-5", messages: [{ role: "user", content: "hi" }] });
   return new Promise((resolve) => {
@@ -111,23 +120,58 @@ test("claude proxy does not retry once the reply has started streaming", async (
   const upstream = dieMidStreamUpstream();
   const url = await upstream.url();
   const proxy = await startProxy({ upstream: url });
-  const client = new AbortController();
   t.after(() => {
-    // The hanging request has to be cut by hand, or the open socket keeps the test runner
-    // from exiting.
-    client.abort();
     proxy.close();
-    upstream.server.closeAllConnections();
     upstream.server.close();
   });
 
-  // Not awaited: a reply cut mid-stream leaves this request hanging, which is a separate
-  // problem. What matters here is that the proxy does not go back to the upstream for a
-  // second copy of a reply the client has already started reading.
-  post(proxy.port, { signal: client.signal });
-  await new Promise((resolve) => setTimeout(resolve, 300));
+  await withTimeout(post(proxy.port), 1000, "client response");
 
   assert.equal(upstream.hitCount(), 1, "a half-sent reply must not be sent twice");
+});
+
+test("claude proxy ends the client response when the upstream dies mid-stream", async (t) => {
+  const upstream = dieMidStreamUpstream();
+  const url = await upstream.url();
+  const proxy = await startProxy({ upstream: url });
+  t.after(() => {
+    proxy.close();
+    upstream.server.close();
+  });
+
+  // `response.pipe(res)` does not forward the upstream's death to `res` - without a fix, this
+  // request hangs forever instead of the client ever seeing the connection close.
+  const got = await withTimeout(post(proxy.port), 1000, "client response");
+
+  assert.match(got.text, /partial/, "what streamed before the upstream died is still delivered");
+});
+
+test("codex proxy ends the client response when the upstream dies mid-stream", async (t) => {
+  const upstream = dieMidStreamUpstream();
+  const url = await upstream.url();
+  const proxy = await startCodexProxy({ chatgptBaseURL: url, apiBaseURL: url, route: async () => null });
+  t.after(() => {
+    proxy.close();
+    upstream.server.close();
+  });
+
+  const got = await withTimeout(post(proxy.port, { path: "/responses" }), 1000, "client response");
+
+  assert.match(got.text, /partial/, "what streamed before the upstream died is still delivered");
+});
+
+test("grok proxy ends the client response when the upstream dies mid-stream", async (t) => {
+  const upstream = dieMidStreamUpstream();
+  const url = await upstream.url();
+  const proxy = await startGrokProxy({ baseURL: url, route: async () => null });
+  t.after(() => {
+    proxy.close();
+    upstream.server.close();
+  });
+
+  const got = await withTimeout(post(proxy.port, { path: "/responses" }), 1000, "client response");
+
+  assert.match(got.text, /partial/, "what streamed before the upstream died is still delivered");
 });
 
 test("codex proxy retries a reset that arrives before any reply", async (t) => {

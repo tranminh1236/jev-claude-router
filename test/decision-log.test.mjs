@@ -5,6 +5,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { appendLine, trimDecisionLog, maybeTrimDecisionLog } from "../src/decision-log.mjs";
 
+// Same as test/launchers.test.mjs's WINDOWS guard: NTFS doesn't support POSIX permission bits,
+// so a file created here never actually comes back as mode 0600 on Windows.
+const WINDOWS = process.platform === "win32";
+
 const dir = mkdtempSync(join(tmpdir(), "jev-decision-log-"));
 const file = join(dir, "decisions.jsonl");
 
@@ -24,7 +28,7 @@ test("appendLine never throws when the directory cannot be created", () => {
  * (promptPreview, src/proxy.mjs). Created world-readable (the open()/umask default), any
  * other local account can read it. appendLine must pin it owner-only on creation.
  */
-test("appendLine creates a new file owner-read/write only, not world-readable", () => {
+test("appendLine creates a new file owner-read/write only, not world-readable", { skip: WINDOWS && "Windows doesn't support POSIX permission bits" }, () => {
   const freshFile = join(dir, `fresh-${Date.now()}.jsonl`);
   appendLine(freshFile, { a: 1 });
   const mode = statSync(freshFile).mode & 0o777;

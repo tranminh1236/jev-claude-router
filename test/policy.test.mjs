@@ -70,6 +70,17 @@ test("allows the same downgrade early in a conversation", () => {
   assert.equal(decide({ ...base, current: "opus", jev: sure("haiku") }).tier, "haiku");
 });
 
+test("refuses a downgrade to haiku once the conversation carries thinking blocks", () => {
+  const out = decide({ ...base, current: "opus", jev: sure("haiku"), hasThinking: true });
+  assert.equal(out.tier, "opus");
+  assert.match(out.reason, /thinking/);
+});
+
+test("a downgrade to sonnet still drops thinking-capped haiku but keeps thinking itself, so it is unaffected", () => {
+  // sonnet, like opus, keeps thinking: true - this guard is about the one tier that strips it.
+  assert.equal(decide({ ...base, current: "fable", jev: sure("sonnet"), hasThinking: true }).tier, "sonnet");
+});
+
 test("substitutes upward when the chosen tier is unavailable", () => {
   const out = decide({ ...base, current: "haiku", available: ["haiku", "opus"], jev: sure("sonnet") });
   assert.equal(out.tier, "opus");
