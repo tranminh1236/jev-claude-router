@@ -8,6 +8,7 @@ import { decide } from "./policy.mjs";
 import { conversationKey, isAgentSession, newTurnPrompt } from "./responses.mjs";
 import { log, announceServedModel } from "./log.mjs";
 import { appendLine } from "./decision-log.mjs";
+import { forwardWithRetry } from "./upstream.mjs";
 
 const CHATGPT_BASE_URL = "https://chatgpt.com/backend-api/codex";
 const API_BASE_URL = "https://api.openai.com/v1";
@@ -175,15 +176,19 @@ export async function startCodexProxy({
       const transport = target.protocol === "http:" ? http : https;
       const headers = { ...req.headers, host: target.host };
       delete headers["content-length"];
-      const upstream = transport.request(
-        {
+      forwardWithRetry({
+        request: transport,
+        options: {
           hostname: target.hostname,
           port: target.port || undefined,
           path: upstreamPath(base, req.url ?? "/"),
           method: req.method,
           headers,
         },
-        (response) => {
+        body: out,
+        replyStarted: () => res.headersSent,
+        debug,
+        onResponse: (response) => {
           announceServedModel(response, "codex", response.statusCode);
           const responseHeaders = { ...response.headers };
           const isModels = req.method === "GET" && /\/models(?:\?|$)/.test(req.url ?? "");
@@ -237,14 +242,12 @@ export async function startCodexProxy({
             res.end();
           });
         },
-      );
-      upstream.on("error", (err) => {
-        debug(`codex upstream error: ${err.message}`);
-        if (!res.headersSent) res.writeHead(502, { "content-type": "application/json" });
-        res.end(JSON.stringify({ error: { message: err.message, type: "proxy_error" } }));
+        onError: (err) => {
+          debug(`codex upstream error: ${err.message}`);
+          if (!res.headersSent) res.writeHead(502, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: { message: err.message, type: "proxy_error" } }));
+        },
       });
-      if (out.length) upstream.write(out);
-      upstream.end();
     });
   });
 

@@ -9,6 +9,7 @@ import { decide } from "./policy.mjs";
 import { conversationKey, isAgentSession, newTurnPrompt } from "./responses.mjs";
 import { log, announceServedModel } from "./log.mjs";
 import { appendLine } from "./decision-log.mjs";
+import { forwardWithRetry } from "./upstream.mjs";
 
 /**
  * Everything the Grok CLI does - the model list, a turn, session deltas, traces, the tool
@@ -171,15 +172,19 @@ export async function startGrokProxy({
 
       const headers = { ...req.headers, host: target.host };
       delete headers["content-length"];
-      const upstream = transport.request(
-        {
+      forwardWithRetry({
+        request: transport,
+        options: {
           hostname: target.hostname,
           port: target.port || undefined,
           path: `${prefix}${(req.url ?? "/").replace(/^\/v1/, "")}`,
           method: req.method,
           headers,
         },
-        (response) => {
+        body: out,
+        replyStarted: () => res.headersSent,
+        debug,
+        onResponse: (response) => {
           announceServedModel(response, "grok", response.statusCode);
           res.writeHead(response.statusCode, response.headers);
           if (!(req.method === "GET" && isModelsPath(req.url))) {
@@ -205,14 +210,12 @@ export async function startGrokProxy({
             res.end();
           });
         },
-      );
-      upstream.on("error", (err) => {
-        debug(`grok upstream error: ${err.message}`);
-        if (!res.headersSent) res.writeHead(502, { "content-type": "application/json" });
-        res.end(JSON.stringify({ error: { message: err.message, type: "proxy_error" } }));
+        onError: (err) => {
+          debug(`grok upstream error: ${err.message}`);
+          if (!res.headersSent) res.writeHead(502, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: { message: err.message, type: "proxy_error" } }));
+        },
       });
-      if (out.length) upstream.write(out);
-      upstream.end();
     });
   });
 
