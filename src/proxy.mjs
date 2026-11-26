@@ -10,6 +10,7 @@ import { writeStatus } from "./status.mjs";
 import { createProxyState } from "./proxy-state.mjs";
 import { appendLine, maybeTrimDecisionLog } from "./decision-log.mjs";
 import { captureUsage } from "./usage.mjs";
+import { forwardWithRetry } from "./upstream.mjs";
 
 const UPSTREAM = "api.anthropic.com";
 const debug = (line) => process.env.JEV_DEBUG && log(line);
@@ -369,22 +370,27 @@ export async function startProxy({
       // Under JEV_DEBUG, ask for an uncompressed stream so the model the API reports can be
       // read back out of it. Not worth the bandwidth cost in normal operation.
       if (process.env.JEV_DEBUG) delete headers["accept-encoding"];
-      const forwarded = transport.request(
-        { hostname: target.hostname, port: target.port || undefined, path: req.url, method: req.method, headers },
-        (up) => {
+      forwardWithRetry({
+        request: transport,
+        options: {
+          hostname: target.hostname, port: target.port || undefined,
+          path: req.url, method: req.method, headers,
+        },
+        body: out,
+        replyStarted: () => res.headersSent,
+        debug,
+        onResponse: (up) => {
           res.writeHead(up.statusCode, up.headers);
           announceServedModel(up, "claude", up.statusCode);
           if (decisionRow) captureUsage({ stream: up, reqId: decisionRow.reqId, file: decisionLogFile });
           up.pipe(res);
         },
-      );
-      forwarded.on("error", (e) => {
-        debug(`upstream error: ${e.message}`);
-        if (!res.headersSent) res.writeHead(502, { "content-type": "application/json" });
-        res.end(JSON.stringify({ type: "error", error: { message: e.message } }));
+        onError: (e) => {
+          debug(`upstream error: ${e.message}`);
+          if (!res.headersSent) res.writeHead(502, { "content-type": "application/json" });
+          res.end(JSON.stringify({ type: "error", error: { message: e.message } }));
+        },
       });
-      if (out.length) forwarded.write(out);
-      forwarded.end();
     });
   });
 
