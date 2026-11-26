@@ -380,6 +380,11 @@ export async function startProxy({
         replyStarted: () => res.headersSent,
         debug,
         onResponse: (up) => {
+          // `up.pipe(res)` does not end `res` when `up` dies mid-stream - it only forwards
+          // 'data' and, on a clean finish, 'end'. A reset or a destroyed socket mid-reply
+          // fires 'error'/'aborted' on `up` with nothing downstream of pipe() to catch it, so
+          // without this `res` is never closed and the client hangs forever.
+          up.on("close", () => { if (!res.writableEnded) res.end(); });
           res.writeHead(up.statusCode, up.headers);
           announceServedModel(up, "claude", up.statusCode);
           if (decisionRow) captureUsage({ stream: up, reqId: decisionRow.reqId, file: decisionLogFile });

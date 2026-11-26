@@ -189,6 +189,9 @@ export async function startCodexProxy({
         replyStarted: () => res.headersSent,
         debug,
         onResponse: (response) => {
+          // `response.pipe(res)` does not end `res` when `response` dies mid-stream, so without
+          // this the client hangs forever on a reply that stopped partway through.
+          response.on("close", () => { if (!res.writableEnded) res.end(); });
           announceServedModel(response, "codex", response.statusCode);
           const responseHeaders = { ...response.headers };
           const isModels = req.method === "GET" && /\/models(?:\?|$)/.test(req.url ?? "");

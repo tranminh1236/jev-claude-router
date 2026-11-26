@@ -185,6 +185,9 @@ export async function startGrokProxy({
         replyStarted: () => res.headersSent,
         debug,
         onResponse: (response) => {
+          // `response.pipe(res)` does not end `res` when `response` dies mid-stream, so without
+          // this the client hangs forever on a reply that stopped partway through.
+          response.on("close", () => { if (!res.writableEnded) res.end(); });
           announceServedModel(response, "grok", response.statusCode);
           res.writeHead(response.statusCode, response.headers);
           if (!(req.method === "GET" && isModelsPath(req.url))) {
