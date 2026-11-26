@@ -257,7 +257,12 @@ test("stop also stops a hand-started daemon still holding the port after launchd
   assert.equal(stopped, true);
   assert.equal(await probe(port), "dead");
   if (WINDOWS) {
-    assert.deepEqual(await exitOf(handStarted), { code: null, signal: "SIGTERM" });
+    // Unlike job.kill("SIGTERM") above (a ChildProcess method, which Node still reports as
+    // signal: "SIGTERM" for its own bookkeeping even though it forcibly terminates), this goes
+    // through stopDaemon() -> process.kill(pid, "SIGTERM") on a pid that isn't a ChildProcess
+    // Node spawned itself. On Windows that's a bare TerminateProcess with no signal semantics
+    // at all, so Node reports it as a plain nonzero exit instead.
+    assert.deepEqual(await exitOf(handStarted), { code: 1, signal: null });
   } else {
     assert.deepEqual(await exitOf(handStarted), { code: 0, signal: null });
   }
