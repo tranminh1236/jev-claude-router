@@ -5,6 +5,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { patchSettings, unpatchSettings } from "../src/claude-settings.mjs";
 
+// NTFS has no POSIX permission bits - chmod/stat mode on Windows collapses to a coarse
+// read-only attribute, never 0600/0500/etc - so anything asserting an exact octal mode, or
+// relying on a chmod to block writes, is meaningless there. Same convention as
+// test/launchers.test.mjs's WINDOWS guard.
+const WINDOWS = process.platform === "win32";
+
 const sandbox = (settings) => {
   const dir = mkdtempSync(join(tmpdir(), "jev-install-"));
   const file = join(dir, "settings.json");
@@ -67,7 +73,7 @@ test("an unwritable settings file is refused without being truncated", () => {
   chmodSync(s.file, 0o644);
 });
 
-test("the file's permission mode is preserved across a patch, not widened to the default", () => {
+test("the file's permission mode is preserved across a patch, not widened to the default", { skip: WINDOWS && "Windows doesn't support POSIX permission bits" }, () => {
   const s = sandbox({ env: {} });
   chmodSync(s.file, 0o600);
   patch(s);
@@ -103,7 +109,7 @@ test("unpatching a settings.json that no longer exists is a clean no-op, not a t
   assert.deepEqual(JSON.parse(readFileSync(s.bookkeeping, "utf8")), {});
 });
 
-test("if the bookkeeping write fails, settings.json is left unpatched (bookkeeping is written first)", () => {
+test("if the bookkeeping write fails, settings.json is left unpatched (bookkeeping is written first)", { skip: WINDOWS && "chmod on a directory doesn't block writes inside it on Windows" }, () => {
   const dir = mkdtempSync(join(tmpdir(), "jev-install-"));
   const file = join(dir, "settings.json");
   const original = { env: {} };

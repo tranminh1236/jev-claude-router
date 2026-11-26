@@ -10,6 +10,18 @@ import { fileURLToPath } from "node:url";
 
 const DAEMON_BIN = join(dirname(fileURLToPath(import.meta.url)), "..", "bin", "jev-daemon.mjs");
 
+// Same WINDOWS guard as test/launchers.test.mjs, for two unrelated Windows gaps this file hits:
+// (1) the fake launchctl below is a bare, extensionless file with a #!/bin/sh shebang -
+// `execFile("launchctl", ...)` runs that directly on POSIX, kernel-side, but Windows's
+// CreateProcess has no shebang support and needs a recognized extension (.exe/.cmd/.bat) in
+// PATHEXT, so the shim is never actually invoked there - every runLaunchctl() call fails before
+// it reaches the fake script, and the production fallback (log it, fall through to the
+// unsupervised path) kicks in instead, exactly as if launchd were simply unreachable; (2) Node
+// cannot deliver SIGTERM as a catchable signal on Windows - it unconditionally terminates the
+// process (libuv's uv_kill), so a daemon's own `process.on("SIGTERM", shutdown)` never runs and
+// a graceful `{code: 0, signal: null}` exit is not something SIGTERM can produce there.
+const WINDOWS = process.platform === "win32";
+
 // Stands in for /bin/launchctl. The real agent shares the production label, and the live daemon
 // on 61820 may be serving the very session running these tests, so neither may ever be reached:
 // every test runs under a throwaway HOME with this first on PATH. State lives in
@@ -209,10 +221,16 @@ test("a supervised daemon waits for a hand-started one to let go of the port, th
   await waitFor(async () => readPid() === job.pid && (await probe(port)) === "ours", 5000, "the takeover");
 
   job.kill("SIGTERM");
-  assert.deepEqual(await exitOf(job), { code: 0, signal: null });
+  if (WINDOWS) {
+    // No graceful handler runs - see the WINDOWS doc comment above - so this is a forced kill,
+    // not the clean exit a POSIX SIGTERM produces.
+    assert.deepEqual(await exitOf(job), { code: null, signal: "SIGTERM" });
+  } else {
+    assert.deepEqual(await exitOf(job), { code: 0, signal: null });
+  }
 });
 
-test("start goes through launchd once the agent is installed, instead of an unsupervised process", async (t) => {
+test("start goes through launchd once the agent is installed, instead of an unsupervised process", { skip: WINDOWS && "the fake launchctl shim can't run on Windows - see the WINDOWS doc comment above" }, async (t) => {
   const { port, fake, calls } = await fresh(t, { installed: true });
   const result = await startDaemon({ port });
   assert.equal(result.via, "launchd");
@@ -222,7 +240,7 @@ test("start goes through launchd once the agent is installed, instead of an unsu
   assert.equal(await probe(port), "ours");
 });
 
-test("start retries while launchd still holds the job's previous process", async (t) => {
+test("start retries while launchd still holds the job's previous process", { skip: WINDOWS && "the fake launchctl shim can't run on Windows - see the WINDOWS doc comment above" }, async (t) => {
   const { port, fake } = await fresh(t, { installed: true });
   writeFileSync(join(fake, "busy"), "2");
   const result = await startDaemon({ port });
@@ -238,10 +256,14 @@ test("stop also stops a hand-started daemon still holding the port after launchd
   const { stopped } = await stopDaemon();
   assert.equal(stopped, true);
   assert.equal(await probe(port), "dead");
-  assert.deepEqual(await exitOf(handStarted), { code: 0, signal: null });
+  if (WINDOWS) {
+    assert.deepEqual(await exitOf(handStarted), { code: null, signal: "SIGTERM" });
+  } else {
+    assert.deepEqual(await exitOf(handStarted), { code: 0, signal: null });
+  }
 });
 
-test("restart under launchd swaps the process but keeps the agent loaded", async (t) => {
+test("restart under launchd swaps the process but keeps the agent loaded", { skip: WINDOWS && "the fake launchctl shim can't run on Windows - see the WINDOWS doc comment above" }, async (t) => {
   const { port, fake, calls } = await fresh(t, { installed: true });
   await startDaemon({ port });
   const before = Number(readFileSync(join(fake, "jobpid"), "utf8"));
